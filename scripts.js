@@ -1248,11 +1248,17 @@ const ensureMcpServiceRuntime = async (service, tokenOverride) => {
         throw new Error(`协议错误：tools/list ${toolsData.error.message || '失败'}`);
     }
     const tools = Array.isArray(toolsData.result?.tools) ? toolsData.result.tools : [];
-    const normalizedTools = tools.map(tool => normalizeMcpTool(tool, normalized.id)).filter(tool => tool.name);
+    const discoveredTools = tools.map(tool => normalizeMcpTool(tool, normalized.id)).filter(tool => tool.name);
     const persistedTools = normalized.tools || [];
-    const toolNamesChanged = normalizedTools.length !== persistedTools.length ||
-        normalizedTools.some((tool, index) => tool.name !== persistedTools[index]?.name || tool.key !== persistedTools[index]?.key);
-    if (toolNamesChanged) {
+    const normalizedTools = discoveredTools.map(tool => {
+        const persisted = persistedTools.find(item => item.key === tool.key || item.name === tool.name);
+        return {
+            ...tool,
+            policy: persisted?.policy || tool.policy
+        };
+    });
+    const toolsChanged = JSON.stringify(normalizedTools) !== JSON.stringify(persistedTools);
+    if (toolsChanged) {
         const target = (appState.mcpServers || []).find(item => item.id === normalized.id);
         if (target) {
             target.tools = normalizedTools;
@@ -1617,7 +1623,17 @@ const finishMcpTraceCard = (summaryText = '') => {
 };
 
 const runMcpToolRouter = async (chat, history) => {
-    const services = getBoundMcpServices(chat, 'ordinary');
+    const configuredServices = getBoundMcpServices(chat, 'ordinary');
+    const services = [];
+    for (const service of configuredServices) {
+        try {
+            const runtime = await ensureMcpServiceRuntime(service);
+            services.push({ ...service, tools: runtime.tools || service.tools || [] });
+        } catch (error) {
+            console.error(`[MCP路由] 服务初始化失败: ${service.name}`, error);
+            services.push(service);
+        }
+    }
     if (!services.length) {
         return { summary: '', results: [] };
     }
@@ -1770,13 +1786,15 @@ const runMcpMemoryReadStage = async (chat, history) => {
     for (const service of services) {
         if (!service.memoryReadTool) continue;
         ensureMcpTraceCard(chat, appState.currentMcpTraceContext?.userMessageTimestamp || null);
-        const tool = (service.tools || []).find(item => item.name === service.memoryReadTool);
-        if (!tool || !isMcpToolOpen(tool)) {
+        const configuredTool = (service.tools || []).find(item => item.name === service.memoryReadTool);
+        if (!configuredTool || !isMcpToolOpen(configuredTool)) {
             console.error(`[MCP记忆读取] 工具不存在：${service.name}.${service.memoryReadTool}`);
             appendMcpTraceEntry('memory_read', service.name, service.memoryReadTool || '', {}, { error: '工具不存在' }, false);
             continue;
         }
         try {
+            const runtime = await ensureMcpServiceRuntime(service);
+            const tool = (runtime.tools || []).find(item => item.name === service.memoryReadTool) || configuredTool;
             const args = await fillMcpToolArguments(service, tool, contextText, `记忆读取：${tool.name}`, currentUserInput);
             updateMcpTraceHeadline(`正在读取记忆：${service.name}.${tool.name}`);
             const result = await callMcpTool(service, tool.name, args);
@@ -1831,13 +1849,15 @@ const runMcpMemoryWriteStage = async (chat, summary, meta = {}) => {
             continue;
         }
         ensureMcpTraceCard(chat, appState.currentMcpTraceContext?.userMessageTimestamp || null);
-        const tool = (service.tools || []).find(item => item.name === service.memoryWriteTool);
-        if (!tool || !isMcpToolOpen(tool)) {
+        const configuredTool = (service.tools || []).find(item => item.name === service.memoryWriteTool);
+        if (!configuredTool || !isMcpToolOpen(configuredTool)) {
             console.error(`[MCP记忆写入] 工具不存在：${service.name}.${service.memoryWriteTool}`);
             appendMcpTraceEntry('memory_write', service.name, service.memoryWriteTool || '', {}, { error: '工具不存在' }, false);
             continue;
         }
         try {
+            const runtime = await ensureMcpServiceRuntime(service);
+            const tool = (runtime.tools || []).find(item => item.name === service.memoryWriteTool) || configuredTool;
             const args = await fillMcpToolArguments(service, tool, contextText, `记忆写入：${tool.name}`, summary);
             updateMcpTraceHeadline(`正在写入记忆：${service.name}.${tool.name}`);
             const result = await callMcpTool(service, tool.name, args);
