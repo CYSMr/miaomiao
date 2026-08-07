@@ -451,7 +451,7 @@ const KEYS = {
 
 const MCP_SECRET_STORAGE_KEY = 'mcp_secret_tokens_v1';
 const MCP_PROTOCOL_VERSION = '2025-03-26';
-const MCP_DEFAULT_TIMEOUT_MS = 15000;
+const MCP_DEFAULT_TIMEOUT_MS = 45000;
 
 // === 播放列表弹窗函数（提前定义以避免作用域问题）===
 function openPlaylistSheet() {
@@ -1987,6 +1987,7 @@ const runMcpMemoryReadStage = async (chat, history) => {
 
     for (const service of services) {
         if (!service.memoryReadTool) continue;
+        let attemptedArguments = {};
         ensureMcpTraceCard(chat, appState.currentMcpTraceContext?.userMessageTimestamp || null);
         const configuredTool = (service.tools || []).find(item => item.name === service.memoryReadTool);
         if (!configuredTool || !isMcpToolOpen(configuredTool)) {
@@ -1998,6 +1999,7 @@ const runMcpMemoryReadStage = async (chat, history) => {
             const runtime = await ensureMcpServiceRuntime(service);
             const tool = (runtime.tools || []).find(item => item.name === service.memoryReadTool) || configuredTool;
             const args = await fillMcpToolArguments(service, tool, contextText, `记忆读取：${tool.name}`, currentUserInput);
+            attemptedArguments = args;
             updateMcpTraceHeadline(`正在读取记忆：${service.name}.${tool.name}`);
             const result = await callMcpTool(service, tool.name, args);
             appendMcpTraceEntry('memory_read', service.name, tool.name, args, result.data ?? result.result, true);
@@ -2011,12 +2013,12 @@ const runMcpMemoryReadStage = async (chat, history) => {
             });
         } catch (error) {
             console.error(`[MCP记忆读取] 失败：${service.name}.${service.memoryReadTool}`, error);
-            appendMcpTraceEntry('memory_read', service.name, service.memoryReadTool || '', {}, error, false);
+            appendMcpTraceEntry('memory_read', service.name, service.memoryReadTool || '', attemptedArguments, error, false);
             results.push({
                 serviceId: service.id,
                 serviceName: service.name,
                 toolName: service.memoryReadTool,
-                arguments: {},
+                arguments: attemptedArguments,
                 ok: false,
                 error: error.message || String(error)
             });
@@ -2045,6 +2047,7 @@ const runMcpMemoryWriteStage = async (chat, summary, meta = {}) => {
 
     for (const service of services) {
         if (!service.memoryWriteTool) continue;
+        let attemptedArguments = {};
         const normalized = normalizeMcpConfig(service);
         if (normalized.lastMemoryWriteHash === writeHash) {
             skipped += 1;
@@ -2061,6 +2064,7 @@ const runMcpMemoryWriteStage = async (chat, summary, meta = {}) => {
             const runtime = await ensureMcpServiceRuntime(service);
             const tool = (runtime.tools || []).find(item => item.name === service.memoryWriteTool) || configuredTool;
             const args = await fillMcpToolArguments(service, tool, contextText, `记忆写入：${tool.name}`, summary);
+            attemptedArguments = args;
             updateMcpTraceHeadline(`正在写入记忆：${service.name}.${tool.name}`);
             const result = await callMcpTool(service, tool.name, args);
             appendMcpTraceEntry('memory_write', service.name, tool.name, args, result.data ?? result.result, true);
@@ -2072,7 +2076,7 @@ const runMcpMemoryWriteStage = async (chat, summary, meta = {}) => {
             written += 1;
         } catch (error) {
             console.error(`[MCP记忆写入] 失败：${service.name}.${service.memoryWriteTool}`, error);
-            appendMcpTraceEntry('memory_write', service.name, service.memoryWriteTool || '', {}, error, false);
+            appendMcpTraceEntry('memory_write', service.name, service.memoryWriteTool || '', attemptedArguments, error, false);
         }
     }
 
