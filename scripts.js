@@ -1628,7 +1628,6 @@ const runMcpToolRouter = async (chat, history) => {
     }
     updateMcpTraceHeadline('正在调用普通工具...');
     const explicitToolHints = collectExplicitMcpToolHints(history, toolCatalog);
-    const currentUserInput = getLatestMcpUserInput(history);
     const serviceMap = new Map(services.map(service => [service.id, normalizeMcpConfig(service)]));
     const routerMessages = [
         { role: 'system', content: buildMcpRouterPrompt(chat, toolCatalog, buildMcpToolExecutionContext(chat, history, '当前阶段：普通 MCP 工具路由'), explicitToolHints) }
@@ -1681,7 +1680,7 @@ const runMcpToolRouter = async (chat, history) => {
         const roundResults = [];
         for (const call of calls) {
             const service = serviceMap.get(call.serviceId);
-            let callArgs = call.arguments && typeof call.arguments === 'object' && !Array.isArray(call.arguments)
+            const callArgs = call.arguments && typeof call.arguments === 'object' && !Array.isArray(call.arguments)
                 ? call.arguments
                 : {};
             if (!service) {
@@ -1713,8 +1712,6 @@ const runMcpToolRouter = async (chat, history) => {
                 results.push(item);
                 continue;
             }
-            callArgs = completeMcpToolArguments(tool.inputSchema, currentUserInput, callArgs);
-
             try {
                 ensureMcpTraceCard(chat, appState.currentMcpTraceContext?.userMessageTimestamp || null);
                 updateMcpTraceHeadline(`正在调用普通工具：${service.name}.${tool.name}`);
