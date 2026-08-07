@@ -653,6 +653,26 @@ const getMcpServiceMemoryLabel = (service) => {
     return `记忆 MCP：${readTool} / ${writeTool}`;
 };
 
+const getRecentHistoryForMemoryRounds = (history, memoryRounds) => {
+    const entries = Array.isArray(history) ? history : [];
+    const limit = Math.max(0, parseInt(memoryRounds, 10) || 0);
+    if (limit <= 0) return [...entries];
+
+    let userRoundsSeen = 0;
+    let startIndex = 0;
+    for (let index = entries.length - 1; index >= 0; index -= 1) {
+        const entry = entries[index];
+        if (entry?.role === 'user' && entry?.type !== 'mcp_trace') {
+            userRoundsSeen += 1;
+            if (userRoundsSeen >= limit) {
+                startIndex = index;
+                break;
+            }
+        }
+    }
+    return entries.slice(startIndex);
+};
+
 const renderMcpEditorPersonaOptions = (service) => {
     const container = document.getElementById('mcp-bound-persona-list');
     if (!container) return;
@@ -859,8 +879,12 @@ const invalidateMcpRuntime = (serviceId = null) => {
 const persistMcpConfigs = async () => {
     appState.mcpServers = (appState.mcpServers || []).map(normalizeMcpConfig);
     await dbStorage.set(KEYS.MCP_CONFIGS, sanitizeMcpConfigsForBackup(appState.mcpServers));
-    invalidateMcpRuntime();
     updateMcpServiceCount();
+};
+
+const isMcpSessionInvalidError = (error) => {
+    const message = typeof error === 'string' ? error : (error?.message || '');
+    return /session/i.test(message) && /(invalid|expired|gone|missing|mcp-session|reconnect)/i.test(message);
 };
 
 const isLocalMcpUrl = (url) => ['localhost', '127.0.0.1', '[::1]', '::1'].includes(url.hostname);
@@ -1206,7 +1230,13 @@ const ensureMcpServiceRuntime = async (service, tokenOverride) => {
     const normalized = normalizeMcpConfig(service);
     const cached = getMcpRuntimeEntry(normalized.id);
     const token = await resolveMcpToken(normalized, tokenOverride);
-    if (cached?.sessionId && Array.isArray(cached.tools) && cached.tools.length > 0 && cached.token === token) {
+    const cacheKey = createSafeHash(JSON.stringify({
+        url: normalized.url || '',
+        authType: normalized.authType || 'none',
+        token: token || '',
+        enabled: normalized.enabled !== false
+    }));
+    if (cached?.initialized && Array.isArray(cached.tools) && cached.token === token && cached.cacheKey === cacheKey) {
         return cached;
     }
 
@@ -1254,7 +1284,7 @@ const ensureMcpServiceRuntime = async (service, tokenOverride) => {
         const persisted = persistedTools.find(item => item.key === tool.key || item.name === tool.name);
         return {
             ...tool,
-            policy: persisted?.policy || tool.policy
+            policy: ['auto', 'confirm', 'off'].includes(persisted?.policy) ? persisted.policy : tool.policy
         };
     });
     const toolsChanged = JSON.stringify(normalizedTools) !== JSON.stringify(persistedTools);
@@ -1267,6 +1297,8 @@ const ensureMcpServiceRuntime = async (service, tokenOverride) => {
     }
 
     const runtime = {
+        initialized: true,
+        cacheKey,
         sessionId: toolsResult.sessionId || initialize.sessionId || '',
         token,
         tools: normalizedTools,
@@ -1303,7 +1335,13 @@ const callMcpTool = async (service, toolName, argumentsObject = {}, options = {}
         throw new Error('协议错误：tools/call 响应不是有效 JSON-RPC');
     }
     if (data.error) {
+        if (isMcpSessionInvalidError(data.error?.message || data.error)) {
+            invalidateMcpRuntime(normalized.id);
+        }
         throw new Error(data.error.message || 'tools/call 失败');
+    }
+    if (response.sessionId && runtime.sessionId !== response.sessionId) {
+        runtime.sessionId = response.sessionId;
     }
     return {
         data,
@@ -1458,25 +1496,174 @@ const stringifyMcpTraceText = (value) => {
     }
 };
 
-const createMcpTraceCard = (chat, userMessageTimestamp) => {
+const queueChatPersist = () => {
+    void dbStorage.set(KEYS.CHATS, appState.chats).catch(error => {
+        console.error('[MCP轨迹] 保存聊天历史失败:', error);
+    });
+};
+
+const removeMcpTraceHistoryEntry = (chat, traceId) => {
+    if (!chat || !traceId || !Array.isArray(chat.history)) return false;
+    const originalLength = chat.history.length;
+    chat.history = chat.history.filter(item => {
+        const payload = getMcpTracePayload(item);
+        return item?.traceId !== traceId && payload?.traceId !== traceId;
+    });
+    if (chat.history.length === originalLength) return false;
+    queueChatPersist();
+    if (appState.currentMcpTrace?.traceId === traceId) {
+        appState.currentMcpTrace = null;
+        appState.currentMcpTraceContext = null;
+    }
+    return true;
+};
+
+const buildMcpTraceHistoryEntry = (chat, userMessageTimestamp) => {
+    const traceId = createMcpId();
+    const timestamp = Date.now();
+    return {
+        role: 'system',
+        type: 'mcp_trace',
+        hidden: true,
+        traceId,
+        chatId: chat?.id || '',
+        userMessageTimestamp: userMessageTimestamp || null,
+        timestamp,
+        content: {
+            type: 'mcp_trace',
+            traceId,
+            chatId: chat?.id || '',
+            userMessageTimestamp: userMessageTimestamp || null,
+            state: 'running',
+            summary: '正在准备...',
+            entryCount: 0,
+            entries: [],
+            createdAt: timestamp,
+            updatedAt: timestamp
+        }
+    };
+};
+
+const normalizeMcpTraceEntry = (entry) => {
+    if (!entry || typeof entry !== 'object') return null;
+    return {
+        stage: entry.stage || 'ordinary',
+        serviceId: entry.serviceId || '',
+        serviceName: entry.serviceName || '',
+        toolName: entry.toolName || '',
+        arguments: entry.arguments,
+        ok: !!entry.ok,
+        result: entry.result,
+        error: entry.error
+    };
+};
+
+const syncMcpTraceHistoryEntry = (runtime) => {
+    const trace = runtime?.historyEntry;
+    if (!trace || typeof trace !== 'object') return;
+    const payload = {
+        type: 'mcp_trace',
+        traceId: runtime.traceId || trace.traceId || '',
+        chatId: runtime.chatId || trace.chatId || '',
+        userMessageTimestamp: runtime.userMessageTimestamp || trace.userMessageTimestamp || null,
+        state: runtime.finished ? 'finished' : 'running',
+        summary: runtime.summary?.textContent || runtime.summaryText || trace.content?.summary || '正在准备...',
+        entryCount: runtime.entryCount || 0,
+        entries: Array.isArray(runtime.entriesData) ? runtime.entriesData.map(item => ({ ...item })) : [],
+        createdAt: trace.content?.createdAt || trace.timestamp || Date.now(),
+        updatedAt: Date.now()
+    };
+    trace.traceId = payload.traceId;
+    trace.chatId = payload.chatId;
+    trace.userMessageTimestamp = payload.userMessageTimestamp;
+    trace.state = payload.state;
+    trace.summary = payload.summary;
+    trace.entryCount = payload.entryCount;
+    trace.entries = payload.entries;
+    trace.updatedAt = payload.updatedAt;
+    trace.content = payload;
+    queueChatPersist();
+};
+
+const getMcpTracePayload = (message) => {
+    if (!message || typeof message !== 'object') return null;
+    if (message.type === 'mcp_trace' && message.content && typeof message.content === 'object') {
+        return message.content;
+    }
+    if (message.content && typeof message.content === 'object' && message.content.type === 'mcp_trace') {
+        return message.content;
+    }
+    return null;
+};
+
+const renderMcpTraceEntries = (runtime) => {
+    if (!runtime?.entriesData || !runtime.entries) return;
+    runtime.entries.innerHTML = '';
+    runtime.entriesData.forEach((item, index) => {
+        const normalized = normalizeMcpTraceEntry(item);
+        if (!normalized) return;
+        const entry = buildMcpTraceEntryNode(normalized, index + 1);
+        runtime.entries.appendChild(entry);
+    });
+};
+
+const buildMcpTraceEntryNode = (entryPayload, entryIndex) => {
+    const ok = !!entryPayload.ok;
+    const entry = document.createElement('div');
+    entry.className = `mcp-trace-entry ${ok ? 'is-success' : 'is-error'}`;
+    const stageLabel = entryPayload.stage || 'ordinary';
+    const traceToolName = `${entryPayload.serviceName || ''}${entryPayload.serviceName ? '.' : ''}${entryPayload.toolName || ''}`;
+    entry.innerHTML = `
+        <div class="mcp-trace-entry-head">
+            <span class="mcp-trace-entry-stage">${stageLabel}</span>
+            <span class="mcp-trace-entry-tool">${traceToolName}</span>
+            <span class="mcp-trace-entry-index">#${entryIndex}</span>
+            <span class="mcp-trace-entry-status">${ok ? 'success' : 'error'}</span>
+        </div>
+        <div class="mcp-trace-entry-field">
+            <div class="mcp-trace-entry-label">arguments</div>
+            <pre class="mcp-trace-entry-pre"></pre>
+        </div>
+        <div class="mcp-trace-entry-field">
+            <div class="mcp-trace-entry-label">${ok ? 'result' : 'error'}</div>
+            <pre class="mcp-trace-entry-pre"></pre>
+        </div>
+    `;
+    const preNodes = entry.querySelectorAll('pre');
+    preNodes[0].textContent = stringifyMcpTraceText(entryPayload.arguments);
+    preNodes[1].textContent = stringifyMcpTraceText(ok ? entryPayload.result : entryPayload.error);
+    return entry;
+};
+
+const createMcpTraceCard = (chat, userMessageTimestamp, historyEntry = null) => {
     const messagesDiv = document.getElementById('chat-messages');
     if (!messagesDiv) return null;
+    const traceEntry = historyEntry && typeof historyEntry === 'object' ? historyEntry : buildMcpTraceHistoryEntry(chat, userMessageTimestamp);
+    if (!historyEntry) {
+        const targetChat = chat?.id ? appState.chats?.[chat.id] : null;
+        if (targetChat) {
+            targetChat.history = Array.isArray(targetChat.history) ? targetChat.history : [];
+            targetChat.history.push(traceEntry);
+        }
+    }
+    const traceContent = getMcpTracePayload(traceEntry) || traceEntry.content || {};
 
     const card = document.createElement('div');
     card.className = 'mcp-trace-card mcp-trace-expanded mcp-trace-running';
-    card.dataset.chatId = chat?.id || '';
-    card.dataset.userTimestamp = userMessageTimestamp ? String(userMessageTimestamp) : '';
-    card.dataset.state = 'running';
-    card.dataset.entryCount = '0';
+    card.dataset.chatId = traceContent.chatId || chat?.id || '';
+    card.dataset.userTimestamp = traceContent.userMessageTimestamp ? String(traceContent.userMessageTimestamp) : '';
+    card.dataset.traceId = traceContent.traceId || traceEntry.traceId || '';
+    card.dataset.state = traceContent.state || 'running';
+    card.dataset.entryCount = String(traceContent.entryCount || 0);
     card.innerHTML = `
         <div class="mcp-trace-topbar">
             <button type="button" class="mcp-trace-header" aria-expanded="true">
                 <span class="mcp-trace-spinner" aria-hidden="true"></span>
                 <span class="mcp-trace-title-block">
                     <span class="mcp-trace-title">MCP 调用轨迹</span>
-                    <span class="mcp-trace-summary">正在准备...</span>
+                    <span class="mcp-trace-summary"></span>
                 </span>
-                <span class="mcp-trace-count">0 次</span>
+                <span class="mcp-trace-count"></span>
             </button>
             <button type="button" class="mcp-trace-delete" aria-label="删除 MCP 调用轨迹" title="删除">×</button>
         </div>
@@ -1492,6 +1679,23 @@ const createMcpTraceCard = (chat, userMessageTimestamp) => {
     const entries = card.querySelector('.mcp-trace-entries');
     const deleteButton = card.querySelector('.mcp-trace-delete');
 
+    const runtime = {
+        chatId: traceContent.chatId || chat?.id || '',
+        userMessageTimestamp: traceContent.userMessageTimestamp || userMessageTimestamp || null,
+        traceId: traceContent.traceId || traceEntry.traceId || createMcpId(),
+        element: card,
+        header,
+        summary,
+        count,
+        body,
+        entries,
+        entryCount: traceContent.entryCount || 0,
+        entriesData: Array.isArray(traceContent.entries) ? traceContent.entries.map(item => ({ ...item })) : [],
+        finished: traceContent.state === 'finished',
+        historyEntry: traceEntry,
+        summaryText: traceContent.summary || '正在准备...'
+    };
+
     header.addEventListener('click', () => {
         const expanded = card.classList.toggle('mcp-trace-expanded');
         card.classList.toggle('mcp-trace-collapsed', !expanded);
@@ -1502,28 +1706,30 @@ const createMcpTraceCard = (chat, userMessageTimestamp) => {
     });
     deleteButton.addEventListener('click', event => {
         event.stopPropagation();
-        card.remove();
-        if (appState.currentMcpTrace?.element === card) {
-            appState.currentMcpTrace = null;
+        const traceId = runtime.traceId;
+        const chat = appState.chats?.[runtime.chatId];
+        if (chat?.history && traceId) {
+            removeMcpTraceHistoryEntry(chat, traceId);
         }
+        card.remove();
     });
 
     messagesDiv.appendChild(card);
     messagesDiv.scrollTop = messagesDiv.scrollHeight;
 
-    const runtime = {
-        chatId: chat?.id || '',
-        userMessageTimestamp: userMessageTimestamp || null,
-        element: card,
-        header,
-        summary,
-        count,
-        body,
-        entries,
-        entryCount: 0,
-        finished: false
-    };
+    if (runtime.finished) {
+        card.classList.remove('mcp-trace-running');
+        card.classList.add('mcp-trace-collapsed');
+        header.setAttribute('aria-expanded', 'false');
+        if (summary) summary.textContent = runtime.summaryText || `已完成 ${runtime.entryCount || 0} 次调用`;
+        if (count) count.textContent = `${runtime.entryCount || 0} 次`;
+    } else {
+        if (summary) summary.textContent = runtime.summaryText || '正在准备...';
+        if (count) count.textContent = `${runtime.entryCount || 0} 次`;
+    }
+
     appState.currentMcpTrace = runtime;
+    renderMcpTraceEntries(runtime);
     return runtime;
 };
 
@@ -1559,6 +1765,8 @@ const ensureMcpTraceCard = (chat, userMessageTimestamp) => {
         trace.finished = false;
         trace.element.dataset.state = 'running';
         trace.element.classList.add('mcp-trace-running');
+        trace.element.classList.remove('mcp-trace-collapsed');
+        trace.header?.setAttribute('aria-expanded', 'true');
         return trace;
     }
     return createMcpTraceCard(chat, userMessageTimestamp);
@@ -1567,45 +1775,37 @@ const ensureMcpTraceCard = (chat, userMessageTimestamp) => {
 const updateMcpTraceHeadline = (text, countText = '') => {
     const trace = getActiveMcpTrace();
     if (!trace) return;
-    if (trace.summary) trace.summary.textContent = text || '';
+    trace.summaryText = text || trace.summaryText || '';
+    if (trace.summary) trace.summary.textContent = trace.summaryText || '';
     if (trace.count) trace.count.textContent = countText || `${trace.entryCount || 0} 次`;
+    syncMcpTraceHistoryEntry(trace);
 };
 
-const appendMcpTraceEntry = (stage, serviceName, toolName, argumentsObject, outcome, ok = true) => {
+const appendMcpTraceEntry = (stage, serviceName, toolName, argumentsObject, outcome, ok = true, options = {}) => {
     const trace = getActiveMcpTrace();
     if (!trace?.element || !trace.element.isConnected) return null;
 
     trace.entryCount += 1;
     trace.element.dataset.entryCount = String(trace.entryCount);
     if (trace.count) trace.count.textContent = `${trace.entryCount} 次`;
+    trace.entriesData = Array.isArray(trace.entriesData) ? trace.entriesData : [];
+    const entryPayload = {
+        stage: stage || 'ordinary',
+        serviceId: options.serviceId || '',
+        serviceName: serviceName || '',
+        toolName: toolName || '',
+        arguments: serializeMcpTraceValue(argumentsObject),
+        ok: !!ok,
+        ...(ok ? { result: serializeMcpTraceValue(outcome) } : { error: serializeMcpTraceValue(outcome) })
+    };
+    trace.entriesData.push(entryPayload);
 
-    const entry = document.createElement('div');
-    entry.className = `mcp-trace-entry ${ok ? 'is-success' : 'is-error'}`;
-    const stageLabel = stage || 'ordinary';
-    const traceToolName = `${serviceName || ''}${serviceName ? '.' : ''}${toolName || ''}`;
-    entry.innerHTML = `
-        <div class="mcp-trace-entry-head">
-            <span class="mcp-trace-entry-stage">${stageLabel}</span>
-            <span class="mcp-trace-entry-tool">${traceToolName}</span>
-            <span class="mcp-trace-entry-index">#${trace.entryCount}</span>
-            <span class="mcp-trace-entry-status">${ok ? 'success' : 'error'}</span>
-        </div>
-        <div class="mcp-trace-entry-field">
-            <div class="mcp-trace-entry-label">arguments</div>
-            <pre class="mcp-trace-entry-pre"></pre>
-        </div>
-        <div class="mcp-trace-entry-field">
-            <div class="mcp-trace-entry-label">${ok ? 'result' : 'error'}</div>
-            <pre class="mcp-trace-entry-pre"></pre>
-        </div>
-    `;
-    const preNodes = entry.querySelectorAll('pre');
-    preNodes[0].textContent = stringifyMcpTraceText(argumentsObject);
-    preNodes[1].textContent = stringifyMcpTraceText(outcome);
+    const entry = buildMcpTraceEntryNode(entryPayload, trace.entryCount);
     trace.entries.appendChild(entry);
     if (trace.element.classList.contains('mcp-trace-expanded')) {
         trace.body.scrollTop = trace.body.scrollHeight;
     }
+    syncMcpTraceHistoryEntry(trace);
     return entry;
 };
 
@@ -1618,8 +1818,10 @@ const finishMcpTraceCard = (summaryText = '') => {
     trace.element.classList.remove('mcp-trace-expanded');
     trace.element.classList.add('mcp-trace-collapsed');
     trace.header?.setAttribute('aria-expanded', 'false');
-    if (trace.summary) trace.summary.textContent = summaryText || `已完成 ${trace.entryCount || 0} 次调用`;
+    trace.summaryText = summaryText || `已完成 ${trace.entryCount || 0} 次调用`;
+    if (trace.summary) trace.summary.textContent = trace.summaryText;
     if (trace.count) trace.count.textContent = `${trace.entryCount || 0} 次`;
+    syncMcpTraceHistoryEntry(trace);
 };
 
 const runMcpToolRouter = async (chat, history) => {
@@ -1693,6 +1895,7 @@ const runMcpToolRouter = async (chat, history) => {
             continue;
         }
 
+        ensureMcpTraceCard(chat, appState.currentMcpTraceContext?.userMessageTimestamp || null);
         const roundResults = [];
         for (const call of calls) {
             const service = serviceMap.get(call.serviceId);
@@ -1729,7 +1932,6 @@ const runMcpToolRouter = async (chat, history) => {
                 continue;
             }
             try {
-                ensureMcpTraceCard(chat, appState.currentMcpTraceContext?.userMessageTimestamp || null);
                 updateMcpTraceHeadline(`正在调用普通工具：${service.name}.${tool.name}`);
                 const result = await callMcpTool(service, tool.name, callArgs);
                 appendMcpTraceEntry('ordinary', service.name, tool.name, callArgs, result.data ?? result.result, true);
@@ -2048,6 +2250,7 @@ const saveMcpFromEditor = async () => {
         } else {
             appState.mcpServers.push(service);
         }
+        invalidateMcpRuntime(service.id);
         await persistMcpConfigs();
         renderMcpSettings();
         openMcpEditor(service.id);
@@ -2085,6 +2288,7 @@ const testMcpFromEditor = async () => {
         } else {
             appState.mcpServers.push(service);
         }
+        invalidateMcpRuntime(service.id);
         await persistMcpConfigs();
         renderMcpSettings();
         openMcpEditor(service.id);
@@ -2158,6 +2362,7 @@ const bindMcpSettingsEvents = () => {
                 ...tool,
                 policy: checkbox.checked ? 'confirm' : 'off'
             } : tool);
+            invalidateMcpRuntime(service.id);
             await persistMcpConfigs();
             renderMcpSettings();
             if (currentMcpEditingId === service.id) {
@@ -2178,6 +2383,7 @@ const bindMcpSettingsEvents = () => {
                 await persistMcpConfigs();
                 renderMcpSettings();
             } else if (action === 'delete' && confirm(`确定删除 MCP 服务“${service.name}”吗？`)) {
+                invalidateMcpRuntime(serviceId);
                 appState.mcpServers = appState.mcpServers.filter(item => item.id !== serviceId);
                 await setMcpSecret(serviceId, '');
                 await persistMcpConfigs();
@@ -6073,6 +6279,11 @@ const appendMessage = (message, messageIndex = null) => {
     if (!chat) return;
 
     const { role, content: contentData, timestamp, author: authorName, replyTo, edited } = message;
+    const tracePayload = getMcpTracePayload(message);
+    if (tracePayload) {
+        createMcpTraceCard(chat, tracePayload.userMessageTimestamp || message.timestamp || null, message);
+        return;
+    }
 
     if (role.toLowerCase() === 'system') {
         const bubble = document.createElement('div');
@@ -8872,6 +9083,33 @@ const processHistoryForAPI = (history, chatOverride = null) => {
         const m = history[i];
         let currentApiMessage = null;
         const content = m.content;
+        const tracePayload = getMcpTracePayload(m);
+        if (tracePayload) {
+            const traceEntries = Array.isArray(tracePayload.entries) ? tracePayload.entries : [];
+            traceEntries.forEach((entry, entryIndex) => {
+                const normalizedEntry = normalizeMcpTraceEntry(entry);
+                if (!normalizedEntry || normalizedEntry.stage !== 'ordinary' || !normalizedEntry.ok) return;
+                apiHistory.push({
+                    role: 'assistant',
+                    content: JSON.stringify({
+                        type: 'mcp_trace',
+                        traceId: tracePayload.traceId || m.traceId || '',
+                        chatId: tracePayload.chatId || m.chatId || '',
+                        userMessageTimestamp: tracePayload.userMessageTimestamp || m.userMessageTimestamp || null,
+                        stage: normalizedEntry.stage,
+                        entryIndex: entryIndex + 1,
+                        serviceId: normalizedEntry.serviceId || '',
+                        serviceName: normalizedEntry.serviceName || '',
+                        toolName: normalizedEntry.toolName || '',
+                        arguments: normalizedEntry.arguments,
+                        ok: true,
+                        result: normalizedEntry.result
+                    }, null, 2)
+                });
+            });
+            processedIndices.add(i);
+            continue;
+        }
 
         const next_m = (i + 1 < history.length) ? history[i + 1] : null;
         if (m.role === 'user' && m.content?.type === 'just_image' && next_m?.role === 'user' && typeof next_m?.content === 'string') {
@@ -9085,10 +9323,7 @@ case 'forum_share':
             // 应用记忆深度限制
             let recentHistory = chat.history;
             const memoryRounds = chat.memoryRounds || 0;
-            if (memoryRounds > 0) {
-                const messagesToKeep = memoryRounds * 2;
-                recentHistory = chat.history.slice(-messagesToKeep);
-            }
+            recentHistory = getRecentHistoryForMemoryRounds(chat.history, memoryRounds);
             
             const processedMainHistory = processHistoryForAPI(recentHistory);
             const fullContext = [...processedMainHistory, ...appState.videoCallMessages];
@@ -11082,7 +11317,7 @@ ${shopItemsPrompt}
                 userMessageTimestamp: lastUserMessage?.timestamp || null
             };
             mcpStageRan = true;
-            const baseMcpHistory = Array.isArray(recentHistory) ? recentHistory : [];
+            const baseMcpHistory = [...(Array.isArray(recentHistory) ? recentHistory : [])];
             try {
                 const mcpMemoryStage = await runMcpMemoryReadStage(chat, baseMcpHistory);
                 const successfulMemoryResults = Array.isArray(mcpMemoryStage?.results)
@@ -11101,31 +11336,18 @@ ${shopItemsPrompt}
 
             try {
                 const mcpToolStage = await runMcpToolRouter(chat, baseMcpHistory);
-                const successfulToolResults = Array.isArray(mcpToolStage?.results)
-                    ? mcpToolStage.results.filter(item => item && item.ok)
-                    : [];
-                if (successfulToolResults.length) {
-                    mcpContextMessages.push(buildMcpContextMessage('MCP 普通工具结果', {
-                        stage: 'ordinary',
-                        finalSummary: mcpToolStage.summary || '',
-                        results: successfulToolResults
-                    }));
-                }
             } catch (error) {
                 console.error('[MCP工具路由] 失败:', error);
                 mcpStageFailed = true;
             }
+        }
 
-            if (mcpStageRan) {
-                finishMcpTraceCard(mcpStageFailed ? '已完成，但包含失败调用' : `已完成 ${appState.currentMcpTrace?.entryCount || 0} 次调用`);
-            }
+        if (mcpStageRan) {
+            finishMcpTraceCard(mcpStageFailed ? '已完成，但包含失败调用' : `已完成 ${appState.currentMcpTrace?.entryCount || 0} 次调用`);
         }
 
         const memoryRounds = chat.memoryRounds || 0;
-        if (memoryRounds > 0) {
-            const messagesToKeep = memoryRounds * 2;
-            recentHistory = chat.history.slice(-messagesToKeep);
-        }
+        recentHistory = getRecentHistoryForMemoryRounds(chat.history, memoryRounds);
         const historyForAPI = processHistoryForAPI(recentHistory);
         let messages = [{ role: 'system', content: systemPrompt }, ...mcpContextMessages, ...historyForAPI];
         
