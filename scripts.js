@@ -453,6 +453,97 @@ const MCP_SECRET_STORAGE_KEY = 'mcp_secret_tokens_v1';
 const MCP_PROTOCOL_VERSION = '2025-03-26';
 const MCP_DEFAULT_TIMEOUT_MS = 15000;
 
+// === 播放列表弹窗函数（提前定义以避免作用域问题）===
+function openPlaylistSheet() {
+    if (typeof renderPlaylist === 'function') {
+        renderPlaylist();
+    }
+    document.getElementById('playlist-sheet-overlay').classList.add('visible');
+    document.getElementById('playlist-sheet').classList.add('visible');
+}
+
+function closePlaylistSheet() {
+    const overlay = document.getElementById('playlist-sheet-overlay');
+    const sheet = document.getElementById('playlist-sheet');
+
+    if (overlay) {
+        overlay.classList.remove('visible');
+        setTimeout(() => {
+            overlay.style.display = 'none';
+        }, 400);
+    }
+
+    if (sheet) {
+        sheet.classList.remove('visible');
+        setTimeout(() => {
+            sheet.style.display = 'none';
+        }, 400);
+    }
+}
+
+// 数据库清理函数已禁用 - 保护用户数据不被自动删除
+async function cleanupDatabaseStorage() {
+    console.log('ℹ️ 数据库清理功能已禁用 - 保护用户数据，不执行任何清理操作');
+    return false;
+}
+
+// 存储空间使用情况检查（仅监控，不清理）
+async function checkStorageUsage() {
+    try {
+        if ('storage' in navigator && 'estimate' in navigator.storage) {
+            const estimate = await navigator.storage.estimate();
+            const usedMB = (estimate.usage / 1024 / 1024).toFixed(2);
+            const quotaMB = (estimate.quota / 1024 / 1024).toFixed(2);
+            const usagePercent = ((estimate.usage / estimate.quota) * 100).toFixed(1);
+
+            console.log(`💾 存储使用情况: ${usedMB}MB / ${quotaMB}MB (${usagePercent}%)`);
+
+            if (usagePercent > 95) {
+                console.warn('⚠️ 存储空间使用率非常高 (>95%)，建议用户手动管理数据');
+            } else if (usagePercent > 85) {
+                console.info('ℹ️ 存储空间使用率较高 (>85%)，但仍在安全范围内');
+            }
+        }
+    } catch (error) {
+        console.warn('⚠️ 存储检查失败:', error);
+    }
+}
+
+// 等待数据库准备好的辅助函数
+const waitForDatabase = () => {
+    return new Promise((resolve) => {
+        if (db && db.isOpen()) {
+            resolve();
+        } else {
+            window.addEventListener('databaseReady', resolve, { once: true });
+        }
+    });
+};
+
+const dbStorage = {
+    async get(key, defaultValue) {
+        await waitForDatabase();
+        const item = await db.kvStore.get(key);
+        return item ? item.value : defaultValue;
+    },
+    async set(key, value) {
+        try {
+            await waitForDatabase();
+            if (!key || typeof key !== 'string') {
+                throw new Error(`无效的键: ${key}`);
+            }
+
+            const safeValue = value === undefined ? null : value;
+            await db.kvStore.put({ key, value: safeValue });
+        } catch (e) {
+            console.error(`数据库保存失败 (key: ${key}):`, e);
+            console.error(`尝试保存的值:`, value);
+            alert(`数据库保存失败 (键: ${key})，可能是储存空间已满或发生未知错误: ${e.message}`);
+            throw e;
+        }
+    }
+};
+
 const createMcpId = () => `mcp_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 const createPersonaId = (kind = 'persona') => `persona_${kind}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 
