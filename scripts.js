@@ -233,6 +233,9 @@ function convertGeminiResponse(geminiData) {
 
 // 通用API调用函数
 async function callApi(messages, isMainChat = true, options = {}) {
+    const requestSignal = options.signal;
+    const apiOptions = { ...options };
+    delete apiOptions.signal;
     let apiConfig;
     
     if (isMainChat) {
@@ -274,16 +277,16 @@ async function callApi(messages, isMainChat = true, options = {}) {
         }
         
         // 添加生成配置
-        if (options.temperature !== undefined || options.max_tokens !== undefined) {
+        if (apiOptions.temperature !== undefined || apiOptions.max_tokens !== undefined) {
             requestBody.generationConfig = {};
-            if (options.temperature !== undefined) {
-                requestBody.generationConfig.temperature = options.temperature;
+            if (apiOptions.temperature !== undefined) {
+                requestBody.generationConfig.temperature = apiOptions.temperature;
             }
-            if (options.max_tokens !== undefined) {
-                requestBody.generationConfig.maxOutputTokens = options.max_tokens;
+            if (apiOptions.max_tokens !== undefined) {
+                requestBody.generationConfig.maxOutputTokens = apiOptions.max_tokens;
             }
-            if (options.top_p !== undefined) {
-                requestBody.generationConfig.topP = options.top_p;
+            if (apiOptions.top_p !== undefined) {
+                requestBody.generationConfig.topP = apiOptions.top_p;
             }
         }
         
@@ -293,7 +296,8 @@ async function callApi(messages, isMainChat = true, options = {}) {
             headers: { 
                 'Content-Type': 'application/json'
             },
-            body: JSON.stringify(requestBody)
+            body: JSON.stringify(requestBody),
+            signal: requestSignal
         });
         
         if (!response.ok) {
@@ -313,7 +317,7 @@ async function callApi(messages, isMainChat = true, options = {}) {
         const requestBody = {
             model: apiConfig.model,
             messages: messages,
-            ...options
+            ...apiOptions
         };
         
         // 调试：打印请求信息
@@ -356,7 +360,8 @@ async function callApi(messages, isMainChat = true, options = {}) {
                 'Content-Type': 'application/json', 
                 'Authorization': `Bearer ${apiConfig.key}` 
             },
-            body: bodyString
+            body: bodyString,
+            signal: requestSignal
         });
         
         console.log('🔧 [callApi] 收到响应，状态码:', response.status);
@@ -980,6 +985,12 @@ const postMcpJsonRpc = async (service, method, params, options = {}) => {
     if (options.id !== undefined) body.id = options.id;
 
     const controller = new AbortController();
+    const abortFromCaller = () => controller.abort();
+    if (options.signal?.aborted) {
+        controller.abort();
+    } else {
+        options.signal?.addEventListener('abort', abortFromCaller, { once: true });
+    }
     const timeout = setTimeout(() => controller.abort(), options.timeoutMs || MCP_DEFAULT_TIMEOUT_MS);
     try {
         const response = await fetch(service.url, {
@@ -997,11 +1008,15 @@ const postMcpJsonRpc = async (service, method, params, options = {}) => {
         };
     } catch (error) {
         if (error?.name === 'AbortError') {
+            if (options.signal?.aborted) {
+                throw new Error('用户已停止调用');
+            }
             throw new Error('请求超时');
         }
         throw new Error(`CORS/网络错误：${error.message}`);
     } finally {
         clearTimeout(timeout);
+        options.signal?.removeEventListener('abort', abortFromCaller);
     }
 };
 
@@ -1226,7 +1241,7 @@ const buildMcpToolContextText = (chat, recentHistory = [], extraLines = []) => {
     return lines.join('\n');
 };
 
-const ensureMcpServiceRuntime = async (service, tokenOverride) => {
+const ensureMcpServiceRuntime = async (service, tokenOverride, options = {}) => {
     const normalized = normalizeMcpConfig(service);
     const cached = getMcpRuntimeEntry(normalized.id);
     const token = await resolveMcpToken(normalized, tokenOverride);
@@ -1248,7 +1263,7 @@ const ensureMcpServiceRuntime = async (service, tokenOverride) => {
         protocolVersion: MCP_PROTOCOL_VERSION,
         capabilities: {},
         clientInfo: { name: 'miaomiao-local-mcp-settings', version: '0.1.0' }
-    }, { id: 1, token, timeoutMs: MCP_DEFAULT_TIMEOUT_MS });
+    }, { id: 1, token, timeoutMs: MCP_DEFAULT_TIMEOUT_MS, signal: options.signal });
 
     const initData = initialize.data;
     if (!initData || initData.jsonrpc !== '2.0' || initData.id !== 1) {
@@ -1261,14 +1276,16 @@ const ensureMcpServiceRuntime = async (service, tokenOverride) => {
     await postMcpJsonRpc(normalized, 'notifications/initialized', {}, {
         token,
         sessionId: initialize.sessionId,
-        timeoutMs: MCP_DEFAULT_TIMEOUT_MS
+        timeoutMs: MCP_DEFAULT_TIMEOUT_MS,
+        signal: options.signal
     });
 
     const toolsResult = await postMcpJsonRpc(normalized, 'tools/list', {}, {
         id: 2,
         token,
         sessionId: initialize.sessionId,
-        timeoutMs: MCP_DEFAULT_TIMEOUT_MS
+        timeoutMs: MCP_DEFAULT_TIMEOUT_MS,
+        signal: options.signal
     });
     const toolsData = toolsResult.data;
     if (!toolsData || toolsData.jsonrpc !== '2.0' || toolsData.id !== 2) {
@@ -1318,7 +1335,7 @@ const callMcpTool = async (service, toolName, argumentsObject = {}, options = {}
     if (!isMcpToolOpen(requestedTool)) {
         throw new Error('工具未开放给 AI');
     }
-    const runtime = await ensureMcpServiceRuntime(normalized, options.tokenOverride);
+    const runtime = await ensureMcpServiceRuntime(normalized, options.tokenOverride, options);
     const requestId = options.id ?? (Number.isFinite(runtime.nextRequestId) ? runtime.nextRequestId : 3);
     runtime.nextRequestId = Number(requestId) + 1;
     const response = await postMcpJsonRpc(normalized, 'tools/call', {
@@ -1328,7 +1345,8 @@ const callMcpTool = async (service, toolName, argumentsObject = {}, options = {}
         id: requestId,
         token: runtime.token,
         sessionId: runtime.sessionId,
-        timeoutMs: options.timeoutMs || MCP_DEFAULT_TIMEOUT_MS
+        timeoutMs: options.timeoutMs || MCP_DEFAULT_TIMEOUT_MS,
+        signal: options.signal
     });
     const data = response.data;
     if (!data || data.jsonrpc !== '2.0' || String(data.id) !== String(requestId)) {
@@ -1670,6 +1688,7 @@ const createMcpTraceCard = (chat, userMessageTimestamp, historyEntry = null) => 
                 </span>
                 <span class="mcp-trace-count"></span>
             </button>
+            <button type="button" class="mcp-trace-stop" aria-label="停止 MCP 调用" title="停止调用">停止</button>
             <button type="button" class="mcp-trace-delete" aria-label="删除 MCP 调用轨迹" title="删除">×</button>
         </div>
         <div class="mcp-trace-body">
@@ -1682,6 +1701,7 @@ const createMcpTraceCard = (chat, userMessageTimestamp, historyEntry = null) => 
     const count = card.querySelector('.mcp-trace-count');
     const body = card.querySelector('.mcp-trace-body');
     const entries = card.querySelector('.mcp-trace-entries');
+    const stopButton = card.querySelector('.mcp-trace-stop');
     const deleteButton = card.querySelector('.mcp-trace-delete');
 
     const runtime = {
@@ -1694,11 +1714,14 @@ const createMcpTraceCard = (chat, userMessageTimestamp, historyEntry = null) => 
         count,
         body,
         entries,
+        stopButton,
         entryCount: traceContent.entryCount || 0,
         entriesData: Array.isArray(traceContent.entries) ? traceContent.entries.map(item => ({ ...item })) : [],
         finished: traceContent.state === 'finished',
         historyEntry: traceEntry,
-        summaryText: traceContent.summary || '正在准备...'
+        summaryText: traceContent.summary || '正在准备...',
+        cancelled: false,
+        cancelController: new AbortController()
     };
 
     header.addEventListener('click', () => {
@@ -1709,8 +1732,22 @@ const createMcpTraceCard = (chat, userMessageTimestamp, historyEntry = null) => 
             body.scrollTop = body.scrollHeight;
         }
     });
+    stopButton.addEventListener('click', event => {
+        event.stopPropagation();
+        if (runtime.finished || runtime.cancelled) return;
+        runtime.cancelled = true;
+        runtime.cancelController.abort();
+        runtime.summaryText = '正在停止调用...';
+        if (runtime.summary) runtime.summary.textContent = runtime.summaryText;
+        stopButton.disabled = true;
+        syncMcpTraceHistoryEntry(runtime);
+    });
     deleteButton.addEventListener('click', event => {
         event.stopPropagation();
+        if (!runtime.finished && !runtime.cancelled) {
+            runtime.cancelled = true;
+            runtime.cancelController.abort();
+        }
         const traceId = runtime.traceId;
         const chat = appState.chats?.[runtime.chatId];
         if (chat?.history && traceId) {
@@ -1723,6 +1760,7 @@ const createMcpTraceCard = (chat, userMessageTimestamp, historyEntry = null) => 
     messagesDiv.scrollTop = messagesDiv.scrollHeight;
 
     if (runtime.finished) {
+        stopButton.disabled = true;
         card.classList.remove('mcp-trace-running');
         card.classList.add('mcp-trace-collapsed');
         header.setAttribute('aria-expanded', 'false');
@@ -1818,6 +1856,7 @@ const finishMcpTraceCard = (summaryText = '') => {
     const trace = getActiveMcpTrace();
     if (!trace) return;
     trace.finished = true;
+    if (trace.stopButton) trace.stopButton.disabled = true;
     trace.element.dataset.state = 'finished';
     trace.element.classList.remove('mcp-trace-running');
     trace.element.classList.remove('mcp-trace-expanded');
@@ -1849,6 +1888,8 @@ const runMcpToolRouter = async (chat, history) => {
     if (!toolCatalog.length) {
         return { summary: '', results: [] };
     }
+    const trace = ensureMcpTraceCard(chat, appState.currentMcpTraceContext?.userMessageTimestamp || null);
+    const cancellationSignal = trace?.cancelController?.signal;
     updateMcpTraceHeadline('正在调用普通工具...');
     const explicitToolHints = collectExplicitMcpToolHints(history, toolCatalog);
     const serviceMap = new Map(services.map(service => [service.id, normalizeMcpConfig(service)]));
@@ -1858,8 +1899,24 @@ const runMcpToolRouter = async (chat, history) => {
     const results = [];
     let finalSummary = '';
 
-    while (true) {
-        const routerPlan = await requestSecondaryJsonPlan(routerMessages, { temperature: 0.1 });
+    routerLoop: while (true) {
+        if (cancellationSignal?.aborted) {
+            finalSummary = '用户已停止继续调用工具';
+            break;
+        }
+        let routerPlan;
+        try {
+            routerPlan = await requestSecondaryJsonPlan(routerMessages, {
+                temperature: 0.1,
+                signal: cancellationSignal
+            });
+        } catch (error) {
+            if (cancellationSignal?.aborted) {
+                finalSummary = '用户已停止继续调用工具';
+                break;
+            }
+            throw error;
+        }
 
         if (routerPlan.text) {
             routerMessages.push({ role: 'assistant', content: routerPlan.text });
@@ -1903,6 +1960,10 @@ const runMcpToolRouter = async (chat, history) => {
         ensureMcpTraceCard(chat, appState.currentMcpTraceContext?.userMessageTimestamp || null);
         const roundResults = [];
         for (const call of calls) {
+            if (cancellationSignal?.aborted) {
+                finalSummary = '用户已停止继续调用工具';
+                break routerLoop;
+            }
             const service = serviceMap.get(call.serviceId);
             const callArgs = call.arguments && typeof call.arguments === 'object' && !Array.isArray(call.arguments)
                 ? call.arguments
@@ -1938,7 +1999,7 @@ const runMcpToolRouter = async (chat, history) => {
             }
             try {
                 updateMcpTraceHeadline(`正在调用普通工具：${service.name}.${tool.name}`);
-                const result = await callMcpTool(service, tool.name, callArgs);
+                const result = await callMcpTool(service, tool.name, callArgs, { signal: cancellationSignal });
                 appendMcpTraceEntry('ordinary', service.name, tool.name, callArgs, result.data ?? result.result, true);
                 const item = {
                     serviceId: service.id,
@@ -1951,6 +2012,10 @@ const runMcpToolRouter = async (chat, history) => {
                 roundResults.push(item);
                 results.push(item);
             } catch (error) {
+                if (cancellationSignal?.aborted) {
+                    finalSummary = '用户已停止继续调用工具';
+                    break routerLoop;
+                }
                 console.error(`[MCP路由] 调用失败: ${service.name}.${tool.name}`, error);
                 appendMcpTraceEntry('ordinary', service.name, tool.name, callArgs, error, false);
                 const item = {
@@ -1976,7 +2041,7 @@ const runMcpToolRouter = async (chat, history) => {
         finalSummary = typeof plan.finalSummary === 'string' ? plan.finalSummary.trim() : finalSummary;
     }
 
-    return { summary: finalSummary, results };
+    return { summary: finalSummary, results, stopped: !!cancellationSignal?.aborted };
 };
 
 const runMcpMemoryReadStage = async (chat, history) => {
@@ -11320,6 +11385,7 @@ ${shopItemsPrompt}
         const mcpContextMessages = [];
         let mcpStageRan = false;
         let mcpStageFailed = false;
+        let mcpStageStopped = false;
         let currentMcpTraceId = '';
         if (!isGroupChat) {
             appState.currentMcpTraceContext = {
@@ -11346,12 +11412,14 @@ ${shopItemsPrompt}
 
             try {
                 const mcpToolStage = await runMcpToolRouter(chat, baseMcpHistory);
+                mcpStageStopped = !!mcpToolStage?.stopped;
                 const successfulToolResults = Array.isArray(mcpToolStage?.results)
                     ? mcpToolStage.results.filter(item => item && item.ok)
                     : [];
-                if (successfulToolResults.length) {
+                if (successfulToolResults.length || mcpStageStopped) {
                     mcpContextMessages.push(buildMcpContextMessage('MCP 普通工具调用结果', {
                         stage: 'ordinary',
+                        stopped: mcpStageStopped,
                         results: successfulToolResults
                     }));
                 }
@@ -11364,7 +11432,12 @@ ${shopItemsPrompt}
         }
 
         if (mcpStageRan) {
-            finishMcpTraceCard(mcpStageFailed ? '已完成，但包含失败调用' : `已完成 ${appState.currentMcpTrace?.entryCount || 0} 次调用`);
+            const traceCallCount = appState.currentMcpTrace?.entryCount || 0;
+            finishMcpTraceCard(
+                mcpStageStopped
+                    ? `已停止，保留 ${traceCallCount} 次调用`
+                    : (mcpStageFailed ? '已完成，但包含失败调用' : `已完成 ${traceCallCount} 次调用`)
+            );
         }
 
         const memoryRounds = chat.memoryRounds || 0;
