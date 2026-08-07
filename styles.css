@@ -3593,8 +3593,13 @@ img{image-rendering:optimizeSpeed;image-rendering:-webkit-optimize-contrast;imag
     box-shadow: 0 6px 18px rgba(0, 0, 0, 0.06);
     overflow: hidden;
 }
+.mcp-trace-topbar {
+    display: flex;
+    align-items: stretch;
+}
 .mcp-trace-header {
-    width: 100%;
+    min-width: 0;
+    flex: 1;
     display: flex;
     align-items: center;
     gap: 10px;
@@ -3604,6 +3609,22 @@ img{image-rendering:optimizeSpeed;image-rendering:-webkit-optimize-contrast;imag
     color: inherit;
     text-align: left;
     cursor: pointer;
+}
+.mcp-trace-delete {
+    flex: none;
+    width: 44px;
+    padding: 0;
+    border: none;
+    border-left: 1px solid var(--input-border);
+    background: transparent;
+    color: var(--system-message-color);
+    font-size: 22px;
+    line-height: 1;
+    cursor: pointer;
+}
+.mcp-trace-delete:active {
+    background: rgba(255, 59, 48, 0.08);
+    color: #ff3b30;
 }
 .mcp-trace-spinner {
     width: 14px;

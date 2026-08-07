@@ -1340,10 +1340,57 @@ ${contextText}
 要求:
 1. 只输出严格 JSON object，不要输出解释、代码块或多余文字
 2. 只填写 schema 允许的字段
-3. 如果没有可用参数，输出 {}
+3. 必须填写 schema 标记为 required 的字段
+4. “当前轮用户输入”不为空时，用它理解用户意图并填写合适参数，不得无理由返回 {}
+5. 只有 schema 确实没有可填写字段时才输出 {}
 `;
 
-const fillMcpToolArguments = async (service, tool, contextText, purposeText) => {
+const getLatestMcpUserInput = (history) => {
+    const messages = Array.isArray(history) ? history : [];
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+        const message = messages[index];
+        if (message?.role !== 'user') continue;
+        return typeof message.content === 'string' ? message.content.trim() : stringifyMcpContent(message.content).trim();
+    }
+    return '';
+};
+
+const completeMcpToolArguments = (schema, currentInput, argumentsObject = {}) => {
+    const result = argumentsObject && typeof argumentsObject === 'object' && !Array.isArray(argumentsObject)
+        ? { ...argumentsObject }
+        : {};
+    const properties = schema?.properties && typeof schema.properties === 'object' ? schema.properties : {};
+    const input = typeof currentInput === 'string' ? currentInput.trim() : '';
+    if (!input || !Object.keys(properties).length) return result;
+
+    const stringKeys = Object.entries(properties)
+        .filter(([, definition]) => !definition?.type || definition.type === 'string')
+        .map(([key]) => key);
+    const fallbackValueFor = (key) => {
+        const definition = properties[key] || {};
+        if (Array.isArray(definition.enum)) {
+            const matched = definition.enum.find(value => typeof value === 'string' && input.toLowerCase().includes(value.toLowerCase()));
+            return matched ?? undefined;
+        }
+        return stringKeys.includes(key) ? input : undefined;
+    };
+    const required = Array.isArray(schema?.required) ? schema.required : [];
+    required.forEach(key => {
+        if (result[key] === undefined || result[key] === '') {
+            const fallbackValue = fallbackValueFor(key);
+            if (fallbackValue !== undefined) result[key] = fallbackValue;
+        }
+    });
+
+    if (!Object.keys(result).length) {
+        const preferredKeys = ['query', 'input', 'text', 'message', 'content', 'prompt', 'request'];
+        const targetKey = preferredKeys.find(key => stringKeys.includes(key)) || (stringKeys.length === 1 ? stringKeys[0] : '');
+        if (targetKey) result[targetKey] = input;
+    }
+    return result;
+};
+
+const fillMcpToolArguments = async (service, tool, contextText, purposeText, currentInput = '') => {
     const schema = tool?.inputSchema || null;
     const hasSchema = schema && Object.keys(schema || {}).length > 0;
     if (!hasSchema) {
@@ -1355,20 +1402,21 @@ const fillMcpToolArguments = async (service, tool, contextText, purposeText) => 
         { role: 'user', content: prompt }
     ], { temperature: 0.1 });
 
-    if (plan.parsed && typeof plan.parsed === 'object' && !Array.isArray(plan.parsed)) {
-        return plan.parsed;
-    }
-
-    return {};
+    const parsedArguments = plan.parsed && typeof plan.parsed === 'object' && !Array.isArray(plan.parsed)
+        ? plan.parsed
+        : {};
+    return completeMcpToolArguments(schema, currentInput, parsedArguments);
 };
 
 const buildMcpToolExecutionContext = (chat, history, extra = '') => {
-    const recentText = (Array.isArray(history) ? history : []).map(message => {
+    const messages = Array.isArray(history) ? history : [];
+    const currentInput = getLatestMcpUserInput(messages);
+    const recentText = messages.map(message => {
         const role = message.role === 'user' ? (chat?.personas?.my?.name || '用户') : (chat?.originalName || chat?.name || 'AI');
         const content = typeof message.content === 'string' ? message.content : stringifyMcpContent(message.content);
         return `${role}: ${content}`;
     }).join('\n');
-    return [extra, recentText].filter(Boolean).join('\n\n');
+    return [extra, currentInput ? `当前轮用户输入:\n${currentInput}` : '', recentText ? `对话历史:\n${recentText}` : ''].filter(Boolean).join('\n\n');
 };
 
 const buildMcpContextMessage = (label, payload) => ({
@@ -1415,14 +1463,17 @@ const createMcpTraceCard = (chat, userMessageTimestamp) => {
     card.dataset.state = 'running';
     card.dataset.entryCount = '0';
     card.innerHTML = `
-        <button type="button" class="mcp-trace-header" aria-expanded="true">
-            <span class="mcp-trace-spinner" aria-hidden="true"></span>
-            <span class="mcp-trace-title-block">
-                <span class="mcp-trace-title">MCP 调用轨迹</span>
-                <span class="mcp-trace-summary">正在准备...</span>
-            </span>
-            <span class="mcp-trace-count">0 次</span>
-        </button>
+        <div class="mcp-trace-topbar">
+            <button type="button" class="mcp-trace-header" aria-expanded="true">
+                <span class="mcp-trace-spinner" aria-hidden="true"></span>
+                <span class="mcp-trace-title-block">
+                    <span class="mcp-trace-title">MCP 调用轨迹</span>
+                    <span class="mcp-trace-summary">正在准备...</span>
+                </span>
+                <span class="mcp-trace-count">0 次</span>
+            </button>
+            <button type="button" class="mcp-trace-delete" aria-label="删除 MCP 调用轨迹" title="删除">×</button>
+        </div>
         <div class="mcp-trace-body">
             <div class="mcp-trace-entries"></div>
         </div>
@@ -1433,6 +1484,7 @@ const createMcpTraceCard = (chat, userMessageTimestamp) => {
     const count = card.querySelector('.mcp-trace-count');
     const body = card.querySelector('.mcp-trace-body');
     const entries = card.querySelector('.mcp-trace-entries');
+    const deleteButton = card.querySelector('.mcp-trace-delete');
 
     header.addEventListener('click', () => {
         const expanded = card.classList.toggle('mcp-trace-expanded');
@@ -1440,6 +1492,13 @@ const createMcpTraceCard = (chat, userMessageTimestamp) => {
         header.setAttribute('aria-expanded', expanded ? 'true' : 'false');
         if (expanded) {
             body.scrollTop = body.scrollHeight;
+        }
+    });
+    deleteButton.addEventListener('click', event => {
+        event.stopPropagation();
+        card.remove();
+        if (appState.currentMcpTrace?.element === card) {
+            appState.currentMcpTrace = null;
         }
     });
 
@@ -1569,6 +1628,7 @@ const runMcpToolRouter = async (chat, history) => {
     }
     updateMcpTraceHeadline('正在调用普通工具...');
     const explicitToolHints = collectExplicitMcpToolHints(history, toolCatalog);
+    const currentUserInput = getLatestMcpUserInput(history);
     const serviceMap = new Map(services.map(service => [service.id, normalizeMcpConfig(service)]));
     const routerMessages = [
         { role: 'system', content: buildMcpRouterPrompt(chat, toolCatalog, buildMcpToolExecutionContext(chat, history, '当前阶段：普通 MCP 工具路由'), explicitToolHints) }
@@ -1621,7 +1681,7 @@ const runMcpToolRouter = async (chat, history) => {
         const roundResults = [];
         for (const call of calls) {
             const service = serviceMap.get(call.serviceId);
-            const callArgs = call.arguments && typeof call.arguments === 'object' && !Array.isArray(call.arguments)
+            let callArgs = call.arguments && typeof call.arguments === 'object' && !Array.isArray(call.arguments)
                 ? call.arguments
                 : {};
             if (!service) {
@@ -1653,6 +1713,7 @@ const runMcpToolRouter = async (chat, history) => {
                 results.push(item);
                 continue;
             }
+            callArgs = completeMcpToolArguments(tool.inputSchema, currentUserInput, callArgs);
 
             try {
                 ensureMcpTraceCard(chat, appState.currentMcpTraceContext?.userMessageTimestamp || null);
@@ -1706,6 +1767,7 @@ const runMcpMemoryReadStage = async (chat, history) => {
 
     const results = [];
     const contextText = buildMcpToolExecutionContext(chat, history, '当前阶段：记忆读取');
+    const currentUserInput = getLatestMcpUserInput(history);
     updateMcpTraceHeadline('正在读取记忆...');
 
     for (const service of services) {
@@ -1718,7 +1780,7 @@ const runMcpMemoryReadStage = async (chat, history) => {
             continue;
         }
         try {
-            const args = await fillMcpToolArguments(service, tool, contextText, `记忆读取：${tool.name}`);
+            const args = await fillMcpToolArguments(service, tool, contextText, `记忆读取：${tool.name}`, currentUserInput);
             updateMcpTraceHeadline(`正在读取记忆：${service.name}.${tool.name}`);
             const result = await callMcpTool(service, tool.name, args);
             appendMcpTraceEntry('memory_read', service.name, tool.name, args, result.data ?? result.result, true);
@@ -1779,7 +1841,7 @@ const runMcpMemoryWriteStage = async (chat, summary, meta = {}) => {
             continue;
         }
         try {
-            const args = await fillMcpToolArguments(service, tool, contextText, `记忆写入：${tool.name}`);
+            const args = await fillMcpToolArguments(service, tool, contextText, `记忆写入：${tool.name}`, summary);
             updateMcpTraceHeadline(`正在写入记忆：${service.name}.${tool.name}`);
             const result = await callMcpTool(service, tool.name, args);
             appendMcpTraceEntry('memory_write', service.name, tool.name, args, result.data ?? result.result, true);
