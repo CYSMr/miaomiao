@@ -2021,6 +2021,9 @@ const appState = {
     musicSessionActiveChatId: null, // 音乐会话关联的聊天ID
     musicSessionStartTime: null, // 音乐会话开始时间
     musicSessionLinkedWorldBookIds: [], // 音乐会话绑定的世界书IDs
+    musicReplyingToMessage: null,
+    isMusicMultiSelectMode: false,
+    selectedMusicMessages: new Set(),
     // 音乐播放器状态管理
     musicPlayerState: {
         isPlayRequesting: false, // 防止重复播放请求
@@ -4842,39 +4845,69 @@ const appendMessage = (message, messageIndex = null) => {
         return ' ';
     };
 
-const showContextMenu = (message, element) => {
+const canViewMessage = (message) => {
+    const contentType = message?.type || message?.content?.type;
+    return ['retraction', 'call_log', 'music_session_log'].includes(contentType);
+};
+
+const setContextMenuItemVisible = (id, visible) => {
+    const item = document.getElementById(id);
+    if (item) item.style.display = visible ? 'block' : 'none';
+};
+
+const showContextMenu = (message, element, options = {}) => {
     const menu = document.getElementById('message-context-menu');
+    const source = options.source || 'chat';
+    const actions = {
+        view: options.onView || (() => handleViewAction(message)),
+        multiselect: options.onMultiSelect || (() => enterMultiSelectMode(message)),
+        quote: options.onQuote || (() => startReplying(message)),
+        copy: options.onCopy || (() => copyMessageContent(message)),
+        delete: options.onDelete || (() => deleteMessage(message.timestamp)),
+        edit: options.onEdit || (() => startInlineEdit(message, element)),
+        regenerate: options.onRegenerate || (() => handleRegenerateAction(message))
+    };
     
     // 保存当前滚动位置
-    const chatMessages = document.getElementById('chat-messages');
+    const chatMessages = source === 'music'
+        ? document.getElementById('music-chat-messages')
+        : document.getElementById('chat-messages');
     const originalScrollTop = chatMessages ? chatMessages.scrollTop : 0;
     
-    appState.activeContextMenu = { message, element };    
+    appState.activeContextMenu = { message, element, source };
+    setContextMenuItemVisible('context-menu-view', options.canView ?? true);
+    setContextMenuItemVisible('context-menu-quote', options.canQuote ?? true);
+    setContextMenuItemVisible('context-menu-regenerate', options.canRegenerate ?? (message.role === 'assistant' || message.role === 'user'));
+    setContextMenuItemVisible('context-menu-copy', options.canCopy ?? true);
+    setContextMenuItemVisible('context-menu-edit', options.canEdit ?? true);
+    setContextMenuItemVisible('context-menu-multiselect', options.canMultiSelect ?? true);
+    setContextMenuItemVisible('context-menu-delete', options.canDelete ?? true);
+
     document.getElementById('context-menu-view').onclick = (event) => { 
         event.stopPropagation(); // 阻止事件继续传播
-        handleViewAction(message); 
+        actions.view();
         hideContextMenu(); 
     };
 
 document.getElementById('context-menu-multiselect').onclick = (event) => { 
         event.stopPropagation();
-        enterMultiSelectMode(message); // 觸發進入多選模式
+        actions.multiselect();
         hideContextMenu(); 
     };
 
     document.getElementById('context-menu-quote').onclick = (event) => { 
         event.stopPropagation(); // 阻止事件继续传播
-        startReplying(message); 
+        actions.quote();
         hideContextMenu(); 
     };
     document.getElementById('context-menu-copy').onclick = (event) => { 
         event.stopPropagation(); // 阻止事件继续传播
-        copyMessageContent(message); 
+        actions.copy();
         hideContextMenu(); 
     };
     document.getElementById('context-menu-delete').onclick = (event) => { 
         event.stopPropagation(); // 阻止事件继续传播
-        deleteMessage(message.timestamp); 
+        actions.delete();
         hideContextMenu(); 
     };
     
@@ -4882,19 +4915,19 @@ document.getElementById('context-menu-multiselect').onclick = (event) => {
     const regenerateBtn = document.getElementById('context-menu-regenerate');
 
 // 1. 设置"编辑"按钮 - 现在支持所有消息类型
-editBtn.style.display = 'block';
+editBtn.style.display = (options.canEdit ?? true) ? 'block' : 'none';
 editBtn.onclick = (event) => {
     event.stopPropagation(); // 阻止事件继续传播
-    startInlineEdit(message, element); // 调用支持所有格式的编辑函数
+    actions.edit();
     hideContextMenu(); 
 };
 
     // 2. 设置"重置"按钮 - 现在支持用户和AI消息
-    if (message.role === 'assistant' || message.role === 'user') {
+    if (options.canRegenerate ?? (message.role === 'assistant' || message.role === 'user')) {
         regenerateBtn.style.display = 'block';
         regenerateBtn.onclick = (event) => {
             event.stopPropagation(); // 阻止事件继续传播
-            handleRegenerateAction(message); 
+            actions.regenerate();
             hideContextMenu(); 
         };
     } else {
@@ -7572,6 +7605,382 @@ const formatVideoCallMessage = (text) => {
 // 音乐会话功能 - 类似视频通话的实现方式
 // ====================================================================
 
+    const ensureMusicMessageShape = (message) => {
+        if (!message.timestamp) message.timestamp = Date.now() + Math.random();
+        if (!message.musicSessionId && appState.currentMusicSessionId) {
+            message.musicSessionId = appState.currentMusicSessionId;
+        }
+        return message;
+    };
+
+    const getMusicMessageAuthorName = (message) => {
+        const chat = appState.chats[appState.musicSessionActiveChatId] || appState.chats[appState.activeChatId];
+        if (!chat) return message.role === 'user' ? '我' : 'AI';
+        if (message.role === 'user') return chat.personas?.my?.name || '我';
+        const aiPersona = Array.isArray(chat.personas?.ai) ? chat.personas.ai[0] : chat.personas?.ai;
+        return message.author || aiPersona?.name || chat.name || 'AI';
+    };
+
+    const renderMusicAvatar = (avatarValue, fallback = '🎵') => {
+        const avatarDiv = document.createElement('div');
+        avatarDiv.className = 'message-avatar';
+        const avatar = avatarValue || fallback;
+        if (typeof avatar === 'string' && (avatar.startsWith('http://') || avatar.startsWith('https://') || avatar.startsWith('data:image'))) {
+            const avatarImg = document.createElement('img');
+            avatarImg.src = avatar;
+            avatarImg.style.width = '100%';
+            avatarImg.style.height = '100%';
+            avatarImg.style.objectFit = 'cover';
+            avatarImg.style.borderRadius = '50%';
+            avatarDiv.appendChild(avatarImg);
+        } else {
+            avatarDiv.textContent = avatar;
+        }
+        return avatarDiv;
+    };
+
+    const renderMusicMessageContent = (contentDiv, message) => {
+        const content = message.content;
+        if (typeof content === 'string') {
+            const cleaned = message.role === 'assistant' ? removeMusicCommands(content) : content;
+            contentDiv.innerHTML = cleaned.replace(/\n/g, '<br>');
+        } else if (content && typeof content === 'object' && content.type === 'html_page') {
+            const htmlPageId = `music-html-page-${message.timestamp}-${Math.random().toString(36).slice(2, 8)}`;
+            const iframeWidth = content.width || '280px';
+            const iframeHeight = content.height || '597px';
+            contentDiv.innerHTML = `
+                <iframe id="${htmlPageId}"
+                    style="width: ${iframeWidth}; height: ${iframeHeight}; border: none; border-radius: 8px; background: #fff;"
+                    sandbox="allow-scripts allow-same-origin allow-forms"
+                    scrolling="no">
+                </iframe>
+            `;
+            setTimeout(() => {
+                const iframe = document.getElementById(htmlPageId);
+                if (iframe && iframe.contentWindow) {
+                    const iframeDoc = iframe.contentWindow.document;
+                    iframeDoc.open();
+                    iframeDoc.write(content.html || '');
+                    iframeDoc.close();
+                }
+            }, 0);
+        } else {
+            contentDiv.textContent = summarizeLastMessage(message);
+        }
+    };
+
+    const renderMusicSessionMessage = (message, messagesContainer, { animate = true } = {}) => {
+        ensureMusicMessageShape(message);
+        const chat = appState.chats[appState.musicSessionActiveChatId];
+        if (!chat || !messagesContainer) return null;
+
+        const isUser = message.role === 'user';
+        const messageDiv = document.createElement('div');
+        messageDiv.className = isUser ? 'message sent' : 'message';
+        messageDiv.id = `music-message-${message.timestamp}`;
+        messageDiv.dataset.timestamp = message.timestamp;
+        if (animate) messageDiv.classList.add('message-appear-animation');
+
+        const avatarValue = isUser
+            ? (chat?.personas?.my?.avatar || chat?.settings?.myAvatar || '😊')
+            : (chat?.personas?.ai?.avatar || chat?.settings?.aiAvatar || '🎵');
+        messageDiv.appendChild(renderMusicAvatar(avatarValue, isUser ? '😊' : '🎵'));
+
+        const contentWrapper = document.createElement('div');
+        const contentDiv = document.createElement('div');
+        contentDiv.className = 'message-content';
+        renderMusicMessageContent(contentDiv, message);
+        contentWrapper.appendChild(contentDiv);
+
+        const timeDiv = document.createElement('div');
+        timeDiv.className = 'message-time';
+        timeDiv.textContent = new Date(message.timestamp).toLocaleTimeString('zh-CN', {hour: '2-digit', minute: '2-digit'});
+        contentWrapper.appendChild(timeDiv);
+
+        messageDiv.appendChild(contentWrapper);
+        addMusicMessageInteractionHandlers(messageDiv, message);
+        messagesContainer.appendChild(messageDiv);
+
+        if (message.replyTo && message.replyTo.timestamp) {
+            const quoteContainer = document.createElement('div');
+            quoteContainer.className = `music-quote-reply-container ${isUser ? 'user' : 'ai'}`;
+            quoteContainer.dataset.forMessage = message.timestamp;
+            const quoteBox = document.createElement('div');
+            quoteBox.className = 'music-quote-reply-box';
+            quoteBox.textContent = `${getMusicMessageAuthorName(message.replyTo)}: ${summarizeLastMessage(message.replyTo)}`;
+            quoteContainer.appendChild(quoteBox);
+            messagesContainer.appendChild(quoteContainer);
+        }
+
+        if (appState.isMusicMultiSelectMode) {
+            renderMusicMessageSelectionState(messageDiv, message);
+        }
+
+        return messageDiv;
+    };
+
+    const renderMusicSessionMessages = () => {
+        const messagesContainer = document.getElementById('music-chat-messages');
+        if (!messagesContainer) return;
+        messagesContainer.innerHTML = '';
+        appState.musicSessionMessages.forEach(msg => renderMusicSessionMessage(msg, messagesContainer, { animate: false }));
+        messagesContainer.scrollTop = messagesContainer.scrollHeight;
+    };
+
+    const pushMusicSessionMessage = (message) => {
+        const normalized = ensureMusicMessageShape(message);
+        appState.musicSessionMessages.push(normalized);
+        const messagesContainer = document.getElementById('music-chat-messages');
+        renderMusicSessionMessage(normalized, messagesContainer);
+        if (messagesContainer) messagesContainer.scrollTop = messagesContainer.scrollHeight;
+        return normalized;
+    };
+
+    const showMusicContextMenu = (message, element) => {
+        showContextMenu(message, element, {
+            source: 'music',
+            canView: canViewMessage(message),
+            canRegenerate: message.role === 'assistant',
+            onQuote: () => startMusicReplying(message),
+            onEdit: () => startMusicInlineEdit(message, element),
+            onDelete: () => deleteMusicMessage(message.timestamp),
+            onMultiSelect: () => enterMusicMultiSelectMode(message),
+            onRegenerate: () => handleMusicRegenerateAction(message)
+        });
+    };
+
+    function addMusicMessageInteractionHandlers(element, message) {
+        let clickCount = 0;
+        let clickTimer = null;
+        let lastTouchTime = 0;
+        let touchMoved = false;
+        let suppressClickUntil = 0;
+        const DOUBLE_CLICK_DELAY = 300;
+
+        const openMenu = (event) => {
+            if (appState.isMusicMultiSelectMode) return;
+            event.preventDefault();
+            event.stopPropagation();
+            showMusicContextMenu(message, element);
+        };
+
+        element.addEventListener('click', (e) => {
+            if (Date.now() < suppressClickUntil) return;
+            if (appState.isMusicMultiSelectMode) {
+                toggleMusicMessageSelection(message, element);
+                return;
+            }
+            clickCount++;
+            if (clickCount === 1) {
+                clickTimer = setTimeout(() => { clickCount = 0; }, DOUBLE_CLICK_DELAY);
+            } else if (clickCount === 2) {
+                clearTimeout(clickTimer);
+                clickCount = 0;
+                openMenu(e);
+            }
+        });
+
+        element.addEventListener('touchstart', () => {
+            touchMoved = false;
+        }, { passive: true });
+        element.addEventListener('touchmove', () => {
+            touchMoved = true;
+        }, { passive: true });
+        element.addEventListener('touchend', (e) => {
+            if (touchMoved) return;
+            const now = Date.now();
+            if (now - lastTouchTime <= DOUBLE_CLICK_DELAY) {
+                suppressClickUntil = now + 450;
+                openMenu(e);
+            }
+            lastTouchTime = now;
+        }, { passive: false });
+    }
+
+    const startMusicReplying = (message) => {
+        appState.musicReplyingToMessage = message;
+        renderMusicReplyPreview();
+        document.getElementById('music-message-input')?.focus();
+    };
+
+    const cancelMusicReplying = () => {
+        appState.musicReplyingToMessage = null;
+        const preview = document.getElementById('music-reply-preview-bar');
+        if (preview) preview.remove();
+    };
+
+    const renderMusicReplyPreview = () => {
+        const inputArea = document.querySelector('#music-player-screen .music-chat-input');
+        if (!inputArea || !appState.musicReplyingToMessage) return;
+        document.getElementById('music-reply-preview-bar')?.remove();
+        const preview = document.createElement('div');
+        preview.id = 'music-reply-preview-bar';
+        preview.innerHTML = `
+            <div class="music-reply-preview-content">
+                <span class="reply-to-author">回复 ${getMusicMessageAuthorName(appState.musicReplyingToMessage)}:</span>
+                <span class="reply-to-text">${summarizeLastMessage(appState.musicReplyingToMessage)}</span>
+            </div>
+            <button type="button" id="cancel-music-reply-btn">&times;</button>
+        `;
+        inputArea.parentNode.insertBefore(preview, inputArea);
+        preview.querySelector('#cancel-music-reply-btn').onclick = cancelMusicReplying;
+    };
+
+    const startMusicInlineEdit = (message, element) => {
+        if (appState.editingMessage) {
+            alert('当前已有消息正在编辑中，请先完成或取消当前编辑。');
+            return;
+        }
+        const contentDiv = element.querySelector('.message-content');
+        if (!contentDiv) return;
+        appState.editingMessage = { timestamp: message.timestamp, source: 'music' };
+        contentDiv.style.display = 'none';
+
+        const textarea = document.createElement('textarea');
+        textarea.className = 'inline-edit-textarea music-inline-edit-textarea';
+        textarea.value = typeof message.content === 'string'
+            ? message.content.replace(/<br\s*\/?>/gi, '\n')
+            : JSON.stringify(message.content, null, 2);
+
+        const buttonContainer = document.createElement('div');
+        buttonContainer.className = 'inline-edit-buttons';
+        const cancelBtn = document.createElement('button');
+        cancelBtn.textContent = '取消';
+        cancelBtn.className = 'action-btn-secondary';
+        cancelBtn.style.padding = '5px 15px';
+        const saveBtn = document.createElement('button');
+        saveBtn.textContent = '保存';
+        saveBtn.className = 'save-btn';
+        saveBtn.style.padding = '5px 15px';
+
+        cancelBtn.onclick = () => cancelMusicInlineEdit(element);
+        saveBtn.onclick = () => saveMusicInlineEdit(message, textarea.value, element);
+        buttonContainer.appendChild(cancelBtn);
+        buttonContainer.appendChild(saveBtn);
+        contentDiv.parentNode.insertBefore(textarea, contentDiv.nextSibling);
+        contentDiv.parentNode.insertBefore(buttonContainer, textarea.nextSibling);
+        textarea.addEventListener('input', () => autoResizeTextarea(textarea));
+        autoResizeTextarea(textarea);
+        textarea.focus();
+    };
+
+    const cancelMusicInlineEdit = (element) => {
+        element.querySelector('.music-inline-edit-textarea')?.remove();
+        element.querySelector('.inline-edit-buttons')?.remove();
+        const contentDiv = element.querySelector('.message-content');
+        if (contentDiv) contentDiv.style.display = '';
+        appState.editingMessage = null;
+    };
+
+    const saveMusicInlineEdit = (message, newText, element) => {
+        if (!newText.trim()) {
+            alert('消息内容不能为空！');
+            return;
+        }
+        const target = appState.musicSessionMessages.find(msg => msg.timestamp === message.timestamp && msg.musicSessionId === appState.currentMusicSessionId);
+        if (!target || target.musicSessionId !== appState.currentMusicSessionId) return;
+        if (typeof target.content === 'object' && target.content !== null) {
+            try {
+                target.content = JSON.parse(newText);
+            } catch (error) {
+                target.content = newText;
+            }
+        } else {
+            target.content = newText;
+        }
+        target.edited = true;
+        cancelMusicInlineEdit(element);
+        renderMusicSessionMessages();
+    };
+
+    const deleteMusicMessage = (timestamp) => {
+        const messageIndex = appState.musicSessionMessages.findIndex(msg => msg.timestamp === timestamp && msg.musicSessionId === appState.currentMusicSessionId);
+        if (messageIndex === -1) return;
+        showCustomConfirm('删除消息', '您确定要删除这条消息吗?', () => {
+            appState.musicSessionMessages.splice(messageIndex, 1);
+            renderMusicSessionMessages();
+        });
+    };
+
+    const enterMusicMultiSelectMode = (initialMessage) => {
+        appState.isMusicMultiSelectMode = true;
+        appState.selectedMusicMessages.clear();
+        appState.selectedMusicMessages.add(initialMessage.timestamp);
+        document.getElementById('music-player-screen')?.classList.add('music-multi-select-active');
+        updateMusicMultiSelectHeader();
+        renderMusicSessionMessages();
+    };
+
+    const exitMusicMultiSelectMode = () => {
+        appState.isMusicMultiSelectMode = false;
+        appState.selectedMusicMessages.clear();
+        document.getElementById('music-player-screen')?.classList.remove('music-multi-select-active');
+        document.getElementById('music-multiselect-header')?.remove();
+        renderMusicSessionMessages();
+    };
+
+    const updateMusicMultiSelectHeader = () => {
+        const container = document.querySelector('#music-player-screen .music-chat-container');
+        if (!container) return;
+        let header = document.getElementById('music-multiselect-header');
+        if (!header) {
+            header = document.createElement('div');
+            header.id = 'music-multiselect-header';
+            header.className = 'multiselect-header music-multiselect-header';
+            container.prepend(header);
+        }
+        const count = appState.selectedMusicMessages.size;
+        header.innerHTML = `
+            <button class="cancel-btn">取消</button>
+            <h2>已选择 ${count} 项</h2>
+            <button class="delete-action-btn">删除</button>
+        `;
+        header.querySelector('.cancel-btn').onclick = exitMusicMultiSelectMode;
+        header.querySelector('.delete-action-btn').onclick = deleteSelectedMusicMessages;
+    };
+
+    const renderMusicMessageSelectionState = (element, message) => {
+        if (!element.querySelector('.message-selection-indicator')) {
+            const indicator = document.createElement('div');
+            indicator.className = 'message-selection-indicator';
+            element.prepend(indicator);
+        }
+        element.classList.toggle('selected', appState.selectedMusicMessages.has(message.timestamp));
+    };
+
+    const toggleMusicMessageSelection = (message, element) => {
+        if (appState.selectedMusicMessages.has(message.timestamp)) {
+            appState.selectedMusicMessages.delete(message.timestamp);
+            element.classList.remove('selected');
+        } else {
+            appState.selectedMusicMessages.add(message.timestamp);
+            element.classList.add('selected');
+        }
+        updateMusicMultiSelectHeader();
+    };
+
+    const deleteSelectedMusicMessages = () => {
+        const count = appState.selectedMusicMessages.size;
+        if (count === 0) return;
+        showCustomConfirm('删除消息', `确定要删除这 ${count} 条消息吗？`, () => {
+            const idsToDelete = Array.from(appState.selectedMusicMessages);
+            appState.musicSessionMessages = appState.musicSessionMessages.filter(msg => {
+                if (msg.musicSessionId !== appState.currentMusicSessionId) return true;
+                return !idsToDelete.includes(msg.timestamp);
+            });
+            exitMusicMultiSelectMode();
+        });
+    };
+
+    const handleMusicRegenerateAction = async (clickedMessage) => {
+        if (clickedMessage.role !== 'assistant') return;
+        const index = appState.musicSessionMessages.findIndex(msg => msg.timestamp === clickedMessage.timestamp && msg.musicSessionId === appState.currentMusicSessionId);
+        if (index === -1) return;
+        appState.musicSessionMessages.splice(index);
+        renderMusicSessionMessages();
+        await triggerMusicAIResponse();
+    };
+
     // 开始音乐会话
     const startMusicSession = async (chatId) => {
         console.log('🎵 [音乐会话] 开始启动会话, chatId:', chatId);
@@ -7585,73 +7994,7 @@ const formatVideoCallMessage = (text) => {
         // 检查是否有未完成的会话
         if (appState.currentMusicSessionId && appState.musicSessionActiveChatId === chatId) {
             console.log('✅ [音乐会话] 恢复现有会话:', appState.currentMusicSessionId);
-            // 恢复聊天界面显示
-            const messagesContainer = document.getElementById('music-chat-messages');
-            messagesContainer.innerHTML = '';
-            
-            // 重新渲染所有消息
-            appState.musicSessionMessages.forEach(msg => {
-                const messageDiv = document.createElement('div');
-                messageDiv.className = msg.role === 'user' ? 'message sent' : 'message';
-                
-                const avatar = msg.role === 'user' 
-                    ? (chat?.personas?.my?.avatar || chat?.settings?.myAvatar || '😊')
-                    : (chat?.personas?.ai?.avatar || chat?.settings?.aiAvatar || '🎵');
-                
-                const avatarDiv = document.createElement('div');
-                avatarDiv.className = 'message-avatar';
-                
-                if (avatar.startsWith('http://') || avatar.startsWith('https://') || avatar.startsWith('data:image')) {
-                    const avatarImg = document.createElement('img');
-                    avatarImg.src = avatar;
-                    avatarImg.style.width = '100%';
-                    avatarImg.style.height = '100%';
-                    avatarImg.style.objectFit = 'cover';
-                    avatarImg.style.borderRadius = '50%';
-                    avatarDiv.appendChild(avatarImg);
-                } else {
-                    avatarDiv.textContent = avatar;
-                }
-                
-                const contentWrapper = document.createElement('div');
-                const contentDiv = document.createElement('div');
-                contentDiv.className = 'message-content';
-                // 支持HTML渲染
-                if (typeof msg.content === 'string') {
-                    contentDiv.innerHTML = msg.content;
-                } else if (msg.content && typeof msg.content === 'object' && msg.content.type === 'html_page') {
-                    // HTML页面类型
-                    const htmlPageId = `music-html-page-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-                    const htmlContent = msg.content.html || '';
-                    const iframeWidth = msg.content.width || '280px';
-                    const iframeHeight = msg.content.height || '597px';
-                    contentDiv.innerHTML = `
-                        <iframe id="${htmlPageId}" 
-                            style="width: ${iframeWidth}; height: ${iframeHeight}; border: none; border-radius: 8px; background: #fff;" 
-                            sandbox="allow-scripts allow-same-origin allow-forms"
-                            scrolling="no">
-                        </iframe>
-                    `;
-                    setTimeout(() => {
-                        const iframe = document.getElementById(htmlPageId);
-                        if (iframe && iframe.contentWindow) {
-                            const iframeDoc = iframe.contentWindow.document;
-                            iframeDoc.open();
-                            iframeDoc.write(htmlContent);
-                            iframeDoc.close();
-                        }
-                    }, 0);
-                } else {
-                    contentDiv.textContent = msg.content;
-                }
-                contentWrapper.appendChild(contentDiv);
-                
-                messageDiv.appendChild(avatarDiv);
-                messageDiv.appendChild(contentWrapper);
-                messagesContainer.appendChild(messageDiv);
-            });
-            
-            messagesContainer.scrollTop = messagesContainer.scrollHeight;
+            renderMusicSessionMessages();
             return;
         }
 
@@ -7680,6 +8023,8 @@ const formatVideoCallMessage = (text) => {
         document.getElementById('music-chat-messages').innerHTML = '';
         document.getElementById('music-message-input').value = '';
         appState.musicSessionMessages = [];
+        cancelMusicReplying();
+        exitMusicMultiSelectMode();
 
         // 不再显示提示消息，用户需要沉浸式体验
         // 不再自动触发AI的第一条消息，等用户主动点击"接收"按钮
@@ -7736,48 +8081,7 @@ ${playlistText || '暂无歌曲'}
             const data = await response.json();
             const aiResponseText = data.choices[0]?.message?.content.trim();
             if (aiResponseText) {
-                const messagesContainer = document.getElementById('music-chat-messages');
-                const aiMsg = document.createElement('div');
-                aiMsg.className = 'message';
-                
-                const aiAvatarDiv = document.createElement('div');
-                aiAvatarDiv.className = 'message-avatar';
-                const aiAvatarUrl = chat?.personas?.ai?.avatar || chat?.settings?.aiAvatar || '🎵';
-                
-                // 判断头像是URL还是emoji（包括base64编码）
-                if (aiAvatarUrl.startsWith('http://') || aiAvatarUrl.startsWith('https://') || aiAvatarUrl.startsWith('data:image')) {
-                    const avatarImg = document.createElement('img');
-                    avatarImg.src = aiAvatarUrl;
-                    avatarImg.style.width = '100%';
-                    avatarImg.style.height = '100%';
-                    avatarImg.style.objectFit = 'cover';
-                    avatarImg.style.borderRadius = '50%';
-                    aiAvatarDiv.appendChild(avatarImg);
-                } else {
-                    aiAvatarDiv.textContent = aiAvatarUrl;
-                }
-                
-                const contentWrapper = document.createElement('div');
-                const contentDiv = document.createElement('div');
-                contentDiv.className = 'message-content';
-                // ▼▼▼ 移除音乐控制指令后再显示，支持HTML渲染 ▼▼▼
-                const cleanedText = removeMusicCommands(aiResponseText);
-                contentDiv.innerHTML = cleanedText;
-                
-                const timeDiv = document.createElement('div');
-                timeDiv.className = 'message-time';
-                timeDiv.textContent = new Date().toLocaleTimeString('zh-CN', {hour: '2-digit', minute: '2-digit'});
-                
-                contentWrapper.appendChild(contentDiv);
-                contentWrapper.appendChild(timeDiv);
-                aiMsg.appendChild(aiAvatarDiv);
-                aiMsg.appendChild(contentWrapper);
-                
-                messagesContainer.appendChild(aiMsg);
-                messagesContainer.scrollTop = messagesContainer.scrollHeight;
-                
-                appState.musicSessionMessages.push({ role: 'assistant', content: aiResponseText });
-                
+                pushMusicSessionMessage({ role: 'assistant', content: aiResponseText });
                 // ▼▼▼ 检测并执行音乐控制指令 ▼▼▼
                 executeMusicCommands(aiResponseText);
             }
@@ -7824,49 +8128,22 @@ ${playlistText || '暂无歌曲'}
 
         console.log('💬 [音乐会话] 用户发送消息:', text);
 
-        const messagesContainer = document.getElementById('music-chat-messages');
         const chat = appState.chats[appState.musicSessionActiveChatId];
-        const myAvatar = chat?.personas?.my?.avatar || chat?.settings?.myAvatar || '😊';
-        
-        const userMsg = document.createElement('div');
-        userMsg.className = 'message sent';
-        const avatarDiv = document.createElement('div');
-        avatarDiv.className = 'message-avatar';
-        
-        // 判断头像是URL还是emoji（包括base64编码）
-        if (myAvatar.startsWith('http://') || myAvatar.startsWith('https://') || myAvatar.startsWith('data:image')) {
-            const avatarImg = document.createElement('img');
-            avatarImg.src = myAvatar;
-            avatarImg.style.width = '100%';
-            avatarImg.style.height = '100%';
-            avatarImg.style.objectFit = 'cover';
-            avatarImg.style.borderRadius = '50%';
-            avatarDiv.appendChild(avatarImg);
-        } else {
-            avatarDiv.textContent = myAvatar;
+        if (!chat) return;
+
+        const messageData = { role: 'user', content: text };
+        if (appState.musicReplyingToMessage) {
+            messageData.replyTo = {
+                role: appState.musicReplyingToMessage.role,
+                author: appState.musicReplyingToMessage.author,
+                content: appState.musicReplyingToMessage.content,
+                timestamp: appState.musicReplyingToMessage.timestamp
+            };
         }
-        
-        const contentWrapper = document.createElement('div');
-        const contentDiv = document.createElement('div');
-        contentDiv.className = 'message-content';
-        // 支持HTML渲染
-        contentDiv.innerHTML = text;
-        
-        const timeDiv = document.createElement('div');
-        timeDiv.className = 'message-time';
-        timeDiv.textContent = new Date().toLocaleTimeString('zh-CN', {hour: '2-digit', minute: '2-digit'});
-        
-        contentWrapper.appendChild(contentDiv);
-        contentWrapper.appendChild(timeDiv);
-        userMsg.appendChild(avatarDiv);
-        userMsg.appendChild(contentWrapper);
-        
-        messagesContainer.appendChild(userMsg);
-        
-        appState.musicSessionMessages.push({ role: 'user', content: text });
+        pushMusicSessionMessage(messageData);
         
         input.value = '';
-        messagesContainer.scrollTop = messagesContainer.scrollHeight;
+        cancelMusicReplying();
         
         console.log('📋 [音乐会话] 当前会话消息数:', appState.musicSessionMessages.length);
     };
@@ -8049,43 +8326,7 @@ ${playlistText || '暂无歌曲'}
             console.log('✅ [音乐会话] AI回复成功:', aiResponseText);
 
             if (aiResponseText) {
-                const aiMsg = document.createElement('div');
-                aiMsg.className = 'message';
-                
-                const aiAvatarDiv = document.createElement('div');
-                aiAvatarDiv.className = 'message-avatar';
-                const aiAvatarContent = chat?.personas?.ai?.avatar || chat?.settings?.aiAvatar || '🎵';
-                
-                // 判断头像是URL还是emoji（包括base64编码）
-                if (aiAvatarContent.startsWith('http://') || aiAvatarContent.startsWith('https://') || aiAvatarContent.startsWith('data:image')) {
-                    const avatarImg = document.createElement('img');
-                    avatarImg.src = aiAvatarContent;
-                    avatarImg.style.width = '100%';
-                    avatarImg.style.height = '100%';
-                    avatarImg.style.objectFit = 'cover';
-                    avatarImg.style.borderRadius = '50%';
-                    aiAvatarDiv.appendChild(avatarImg);
-                } else {
-                    aiAvatarDiv.textContent = aiAvatarContent;
-                }
-                
-                const aiContentWrapper = document.createElement('div');
-                const aiContent = document.createElement('div');
-                aiContent.className = 'message-content';
-                // ▼▼▼ 移除音乐控制指令后再显示 ▼▼▼
-                aiContent.textContent = removeMusicCommands(aiResponseText);
-                
-                const aiTime = document.createElement('div');
-                aiTime.className = 'message-time';
-                aiTime.textContent = new Date().toLocaleTimeString('zh-CN', {hour: '2-digit', minute: '2-digit'});
-                
-                aiContentWrapper.appendChild(aiContent);
-                aiContentWrapper.appendChild(aiTime);
-                aiMsg.appendChild(aiAvatarDiv);
-                aiMsg.appendChild(aiContentWrapper);
-                
-                messagesContainer.appendChild(aiMsg);
-                appState.musicSessionMessages.push({ role: 'assistant', content: aiResponseText });
+                pushMusicSessionMessage({ role: 'assistant', content: aiResponseText });
                 console.log('💾 [音乐会话] 消息已保存到历史记录');
                 
                 // ▼▼▼ 检测并执行音乐控制指令 ▼▼▼
@@ -8225,9 +8466,10 @@ ${playlistText || '暂无歌曲'}
         
         // 将本次音乐会话的聊天记录合并到主历史记录里
         appState.musicSessionMessages.forEach(msg => {
+            ensureMusicMessageShape(msg);
             chat.history.push({
                 ...msg,
-                timestamp: Date.now() + Math.random(), // 确保时间戳唯一
+                timestamp: msg.timestamp,
                 hidden: true, // 在聊天界面中隐藏这些过程
                 musicSessionId: appState.currentMusicSessionId
             });
@@ -8254,6 +8496,8 @@ ${playlistText || '暂无歌曲'}
         appState.currentMusicSessionId = null;
         appState.musicSessionActiveChatId = null;
         appState.musicSessionStartTime = null;
+        cancelMusicReplying();
+        exitMusicMultiSelectMode();
         
         // 清空聊天框
         document.getElementById('music-chat-messages').innerHTML = '';
@@ -8291,15 +8535,24 @@ ${playlistText || '暂无歌曲'}
         const sessionMessages = chat.history.slice(startIndex + 1, endIndex);
 
         sessionMessages.forEach(msg => {
+            if (msg.hidden && msg.content === '[音乐会话开始]') return;
             const msgElement = document.createElement('p');
             msgElement.className = 'videocall-message';
 
             if (msg.role === 'user') {
                 msgElement.classList.add('user-call');
-                msgElement.textContent = msg.content;
             } else { 
                 msgElement.classList.add('ai-call');
-                msgElement.textContent = msg.content;
+            }
+            const visibleContent = msg.role === 'assistant' && typeof msg.content === 'string'
+                ? removeMusicCommands(msg.content)
+                : summarizeLastMessage(msg);
+            msgElement.textContent = visibleContent;
+            if (msg.replyTo && msg.replyTo.timestamp) {
+                const quote = document.createElement('span');
+                quote.className = 'music-log-quote';
+                quote.textContent = `${getMusicMessageAuthorName(msg.replyTo)}: ${summarizeLastMessage(msg.replyTo)}`;
+                msgElement.prepend(quote);
             }
             logContainer.appendChild(msgElement);
         });
