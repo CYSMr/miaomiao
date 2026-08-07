@@ -3586,6 +3586,10 @@ img{image-rendering:optimizeSpeed;image-rendering:-webkit-optimize-contrast;imag
     accent-color: var(--wechat-green);
 }
 .mcp-trace-card {
+    flex: 0 0 auto;
+    align-self: stretch;
+    width: 100%;
+    box-sizing: border-box;
     margin: 8px 0 12px;
     border-radius: 14px;
     border: 1px solid var(--input-border);
