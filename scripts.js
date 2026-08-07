@@ -673,7 +673,7 @@ const renderMcpEditorPersonaOptions = (service) => {
 };
 
 const renderMcpEditorToolSelects = (service) => {
-    const tools = Array.isArray(service?.tools) ? service.tools : [];
+    const tools = getOpenMcpTools(service);
     const readSelect = document.getElementById('mcp-memory-read-tool-select');
     const writeSelect = document.getElementById('mcp-memory-write-tool-select');
     if (!readSelect || !writeSelect) return;
@@ -695,6 +695,8 @@ const renderMcpEditorToolSelects = (service) => {
     writeSelect.innerHTML = buildOptions(service?.memoryWriteTool || '');
     readSelect.value = service?.memoryReadTool || '';
     writeSelect.value = service?.memoryWriteTool || '';
+    if (!tools.some(tool => tool.name === readSelect.value)) readSelect.value = '';
+    if (!tools.some(tool => tool.name === writeSelect.value)) writeSelect.value = '';
 };
 
 const refreshMcpEditorVisibility = () => {
@@ -809,6 +811,13 @@ const normalizeMcpTool = (tool, serviceId = '') => ({
     policy: ['auto', 'confirm', 'off'].includes(tool.policy) ? tool.policy : 'confirm'
 });
 
+const isMcpToolOpen = (tool) => tool?.policy !== 'off';
+
+const getOpenMcpTools = (service) => {
+    const tools = Array.isArray(service?.tools) ? service.tools : [];
+    return tools.filter(isMcpToolOpen);
+};
+
 const normalizeMcpConfig = (service) => ({
     id: service.id || createMcpId(),
     name: service.name || '未命名服务',
@@ -819,6 +828,7 @@ const normalizeMcpConfig = (service) => ({
     bindingMode: service.bindingMode === 'selected' ? 'selected' : 'all',
     boundPersonaIds: Array.isArray(service.boundPersonaIds) ? [...new Set(service.boundPersonaIds.filter(Boolean))] : [],
     memoryEnabled: !!service.memoryEnabled,
+    ordinaryToolsEnabled: typeof service.ordinaryToolsEnabled === 'boolean' ? service.ordinaryToolsEnabled : !service.memoryEnabled,
     memoryReadTool: service.memoryReadTool || '',
     memoryWriteTool: service.memoryWriteTool || '',
     lastMemoryWriteHash: service.lastMemoryWriteHash || '',
@@ -1039,7 +1049,7 @@ const getBoundMcpServices = (chat, kind = 'ordinary') => {
     return services
         .map(normalizeMcpConfig)
         .filter(service => service.enabled && isServiceBoundToChat(service, chat))
-        .filter(service => kind === 'memory' ? !!service.memoryEnabled : !service.memoryEnabled);
+        .filter(service => kind === 'memory' ? !!service.memoryEnabled : !!service.ordinaryToolsEnabled);
 };
 
 const safeJsonResponseText = async (response) => {
@@ -1057,7 +1067,7 @@ const requestSecondaryChatCompletion = async (messages, options = {}) => {
 
 const buildMcpToolCatalog = (services) => services.flatMap(service => {
     const normalized = normalizeMcpConfig(service);
-    return (normalized.tools || []).map(tool => ({
+    return getOpenMcpTools(normalized).map(tool => ({
         serviceId: normalized.id,
         serviceName: normalized.name,
         toolName: tool.name,
@@ -1066,7 +1076,17 @@ const buildMcpToolCatalog = (services) => services.flatMap(service => {
     }));
 });
 
-const buildMcpRouterPrompt = (chat, toolCatalog, stageContext = '') => {
+const collectExplicitMcpToolHints = (history, toolCatalog) => {
+    const latestUserMessage = [...(Array.isArray(history) ? history : [])].reverse().find(message => message?.role === 'user');
+    const latestText = latestUserMessage ? stringifyMcpContent(latestUserMessage.content).toLowerCase() : '';
+    if (!latestText) return [];
+
+    return toolCatalog
+        .filter(tool => tool?.toolName && latestText.includes(tool.toolName.toLowerCase()))
+        .map(tool => `${tool.serviceName}.${tool.toolName}`);
+};
+
+const buildMcpRouterPrompt = (chat, toolCatalog, stageContext = '', explicitToolHints = []) => {
     const personaSummary = getChatMcpPersonaIds(chat).join(', ') || 'none';
     return `
 你是 MCP 工具路由器。根据当前对话和工具 schema，自主决定是否继续调用工具，以及每轮调用哪些工具、参数如何填写、何时结束。
@@ -1083,6 +1103,14 @@ ${personaSummary}
 
 可用工具目录:
 ${JSON.stringify(toolCatalog, null, 2)}
+
+${explicitToolHints.length ? `用户明确点名的工具:
+${explicitToolHints.join(', ')}
+
+规则：
+- 对这些已开放工具必须优先尝试调用
+- 参数必须由你按对应 schema 和对话上下文填写
+- 不要自己拆字符串、切片、猜测参数格式，也不要把用户原句直接当参数拼进去` : ''}
 
 已知上下文:
 ${stageContext || '(空)'}
@@ -1105,6 +1133,7 @@ ${stageContext || '(空)'}
 - 如果没有必要调用工具，decision 直接用 final
 - finalSummary 要简短，供主模型继续生成回答
 - 不要编造工具不存在的参数名
+- 只从可用工具目录里挑工具，不要调用未开放的工具
 `;
 };
 
@@ -1229,6 +1258,13 @@ const ensureMcpServiceRuntime = async (service, tokenOverride) => {
 
 const callMcpTool = async (service, toolName, argumentsObject = {}, options = {}) => {
     const normalized = normalizeMcpConfig(service);
+    const requestedTool = (normalized.tools || []).find(item => item.name === toolName);
+    if (!requestedTool) {
+        throw new Error('工具不存在');
+    }
+    if (!isMcpToolOpen(requestedTool)) {
+        throw new Error('工具未开放给 AI');
+    }
     const runtime = await ensureMcpServiceRuntime(normalized, options.tokenOverride);
     const response = await postMcpJsonRpc(normalized, 'tools/call', {
         name: toolName,
@@ -1323,6 +1359,187 @@ const buildMcpContextMessage = (label, payload) => ({
     content: `【${label}】\n${stringifyMcpContent(payload)}`
 });
 
+const serializeMcpTraceValue = (value) => {
+    if (value instanceof Error) {
+        const errorObject = {
+            name: value.name || 'Error',
+            message: value.message || String(value)
+        };
+        if (value.stack) errorObject.stack = value.stack;
+        Object.keys(value).forEach(key => {
+            if (!(key in errorObject)) {
+                errorObject[key] = value[key];
+            }
+        });
+        return errorObject;
+    }
+    if (typeof value === 'string') return value;
+    return value;
+};
+
+const stringifyMcpTraceText = (value) => {
+    const payload = serializeMcpTraceValue(value);
+    if (typeof payload === 'string') return payload;
+    try {
+        return JSON.stringify(payload, null, 2);
+    } catch (error) {
+        return String(payload);
+    }
+};
+
+const createMcpTraceCard = (chat, userMessageTimestamp) => {
+    const messagesDiv = document.getElementById('chat-messages');
+    if (!messagesDiv) return null;
+
+    const card = document.createElement('div');
+    card.className = 'mcp-trace-card mcp-trace-expanded mcp-trace-running';
+    card.dataset.chatId = chat?.id || '';
+    card.dataset.userTimestamp = userMessageTimestamp ? String(userMessageTimestamp) : '';
+    card.dataset.state = 'running';
+    card.dataset.entryCount = '0';
+    card.innerHTML = `
+        <button type="button" class="mcp-trace-header" aria-expanded="true">
+            <span class="mcp-trace-spinner" aria-hidden="true"></span>
+            <span class="mcp-trace-title-block">
+                <span class="mcp-trace-title">MCP 调用轨迹</span>
+                <span class="mcp-trace-summary">正在准备...</span>
+            </span>
+            <span class="mcp-trace-count">0 次</span>
+        </button>
+        <div class="mcp-trace-body">
+            <div class="mcp-trace-entries"></div>
+        </div>
+    `;
+
+    const header = card.querySelector('.mcp-trace-header');
+    const summary = card.querySelector('.mcp-trace-summary');
+    const count = card.querySelector('.mcp-trace-count');
+    const body = card.querySelector('.mcp-trace-body');
+    const entries = card.querySelector('.mcp-trace-entries');
+
+    header.addEventListener('click', () => {
+        const expanded = card.classList.toggle('mcp-trace-expanded');
+        card.classList.toggle('mcp-trace-collapsed', !expanded);
+        header.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+        if (expanded) {
+            body.scrollTop = body.scrollHeight;
+        }
+    });
+
+    messagesDiv.appendChild(card);
+    messagesDiv.scrollTop = messagesDiv.scrollHeight;
+
+    const runtime = {
+        chatId: chat?.id || '',
+        userMessageTimestamp: userMessageTimestamp || null,
+        element: card,
+        header,
+        summary,
+        count,
+        body,
+        entries,
+        entryCount: 0,
+        finished: false
+    };
+    appState.currentMcpTrace = runtime;
+    return runtime;
+};
+
+const getCurrentMcpTraceContext = () => {
+    const context = appState.currentMcpTraceContext;
+    if (!context || typeof context !== 'object') return null;
+    return {
+        chatId: context.chatId || '',
+        userMessageTimestamp: context.userMessageTimestamp || null
+    };
+};
+
+const isMcpTraceForContext = (trace, context) => {
+    if (!trace?.element || !trace.element.isConnected || !context) return false;
+    return trace.chatId === context.chatId && trace.userMessageTimestamp === context.userMessageTimestamp;
+};
+
+const getActiveMcpTrace = () => {
+    const trace = appState.currentMcpTrace;
+    const context = getCurrentMcpTraceContext();
+    if (!trace?.element || !trace.element.isConnected) return null;
+    if (context && !isMcpTraceForContext(trace, context)) return null;
+    return trace;
+};
+
+const ensureMcpTraceCard = (chat, userMessageTimestamp) => {
+    const context = {
+        chatId: chat?.id || '',
+        userMessageTimestamp: userMessageTimestamp || null
+    };
+    const trace = getActiveMcpTrace();
+    if (isMcpTraceForContext(trace, context)) {
+        trace.finished = false;
+        trace.element.dataset.state = 'running';
+        trace.element.classList.add('mcp-trace-running');
+        return trace;
+    }
+    return createMcpTraceCard(chat, userMessageTimestamp);
+};
+
+const updateMcpTraceHeadline = (text, countText = '') => {
+    const trace = getActiveMcpTrace();
+    if (!trace) return;
+    if (trace.summary) trace.summary.textContent = text || '';
+    if (trace.count) trace.count.textContent = countText || `${trace.entryCount || 0} 次`;
+};
+
+const appendMcpTraceEntry = (stage, serviceName, toolName, argumentsObject, outcome, ok = true) => {
+    const trace = getActiveMcpTrace();
+    if (!trace?.element || !trace.element.isConnected) return null;
+
+    trace.entryCount += 1;
+    trace.element.dataset.entryCount = String(trace.entryCount);
+    if (trace.count) trace.count.textContent = `${trace.entryCount} 次`;
+
+    const entry = document.createElement('div');
+    entry.className = `mcp-trace-entry ${ok ? 'is-success' : 'is-error'}`;
+    const stageLabel = stage || 'ordinary';
+    const traceToolName = `${serviceName || ''}${serviceName ? '.' : ''}${toolName || ''}`;
+    entry.innerHTML = `
+        <div class="mcp-trace-entry-head">
+            <span class="mcp-trace-entry-stage">${stageLabel}</span>
+            <span class="mcp-trace-entry-tool">${traceToolName}</span>
+            <span class="mcp-trace-entry-index">#${trace.entryCount}</span>
+            <span class="mcp-trace-entry-status">${ok ? 'success' : 'error'}</span>
+        </div>
+        <div class="mcp-trace-entry-field">
+            <div class="mcp-trace-entry-label">arguments</div>
+            <pre class="mcp-trace-entry-pre"></pre>
+        </div>
+        <div class="mcp-trace-entry-field">
+            <div class="mcp-trace-entry-label">${ok ? 'result' : 'error'}</div>
+            <pre class="mcp-trace-entry-pre"></pre>
+        </div>
+    `;
+    const preNodes = entry.querySelectorAll('pre');
+    preNodes[0].textContent = stringifyMcpTraceText(argumentsObject);
+    preNodes[1].textContent = stringifyMcpTraceText(outcome);
+    trace.entries.appendChild(entry);
+    if (trace.element.classList.contains('mcp-trace-expanded')) {
+        trace.body.scrollTop = trace.body.scrollHeight;
+    }
+    return entry;
+};
+
+const finishMcpTraceCard = (summaryText = '') => {
+    const trace = getActiveMcpTrace();
+    if (!trace) return;
+    trace.finished = true;
+    trace.element.dataset.state = 'finished';
+    trace.element.classList.remove('mcp-trace-running');
+    trace.element.classList.remove('mcp-trace-expanded');
+    trace.element.classList.add('mcp-trace-collapsed');
+    trace.header?.setAttribute('aria-expanded', 'false');
+    if (trace.summary) trace.summary.textContent = summaryText || `已完成 ${trace.entryCount || 0} 次调用`;
+    if (trace.count) trace.count.textContent = `${trace.entryCount || 0} 次`;
+};
+
 const runMcpToolRouter = async (chat, history) => {
     const services = getBoundMcpServices(chat, 'ordinary');
     if (!services.length) {
@@ -1330,9 +1547,14 @@ const runMcpToolRouter = async (chat, history) => {
     }
 
     const toolCatalog = buildMcpToolCatalog(services);
+    if (!toolCatalog.length) {
+        return { summary: '', results: [] };
+    }
+    updateMcpTraceHeadline('正在调用普通工具...');
+    const explicitToolHints = collectExplicitMcpToolHints(history, toolCatalog);
     const serviceMap = new Map(services.map(service => [service.id, normalizeMcpConfig(service)]));
     const routerMessages = [
-        { role: 'system', content: buildMcpRouterPrompt(chat, toolCatalog, buildMcpToolExecutionContext(chat, history, '当前阶段：普通 MCP 工具路由')) }
+        { role: 'system', content: buildMcpRouterPrompt(chat, toolCatalog, buildMcpToolExecutionContext(chat, history, '当前阶段：普通 MCP 工具路由'), explicitToolHints) }
     ];
     const results = [];
     let finalSummary = '';
@@ -1382,12 +1604,16 @@ const runMcpToolRouter = async (chat, history) => {
         const roundResults = [];
         for (const call of calls) {
             const service = serviceMap.get(call.serviceId);
+            const callArgs = call.arguments && typeof call.arguments === 'object' && !Array.isArray(call.arguments)
+                ? call.arguments
+                : {};
             if (!service) {
+                appendMcpTraceEntry('ordinary', '', call.toolName || '', callArgs, { error: '服务不存在' }, false);
                 const item = {
                     serviceId: call.serviceId || '',
                     serviceName: '',
                     toolName: call.toolName || '',
-                    arguments: call.arguments && typeof call.arguments === 'object' && !Array.isArray(call.arguments) ? call.arguments : {},
+                    arguments: callArgs,
                     ok: false,
                     error: '服务不存在'
                 };
@@ -1396,25 +1622,26 @@ const runMcpToolRouter = async (chat, history) => {
                 continue;
             }
             const tool = (service.tools || []).find(item => item.name === call.toolName);
-            if (!tool) {
+            if (!tool || !isMcpToolOpen(tool)) {
                 const item = {
                     serviceId: service.id,
                     serviceName: service.name,
                     toolName: call.toolName || '',
-                    arguments: call.arguments && typeof call.arguments === 'object' && !Array.isArray(call.arguments) ? call.arguments : {},
+                    arguments: callArgs,
                     ok: false,
-                    error: '工具不存在'
+                    error: '工具不存在或未开放'
                 };
+                appendMcpTraceEntry('ordinary', service.name, call.toolName || '', callArgs, { error: '工具不存在或未开放' }, false);
                 roundResults.push(item);
                 results.push(item);
                 continue;
             }
 
-            const callArgs = call.arguments && typeof call.arguments === 'object' && !Array.isArray(call.arguments)
-                ? call.arguments
-                : {};
             try {
+                ensureMcpTraceCard(chat, appState.currentMcpTraceContext?.userMessageTimestamp || null);
+                updateMcpTraceHeadline(`正在调用普通工具：${service.name}.${tool.name}`);
                 const result = await callMcpTool(service, tool.name, callArgs);
+                appendMcpTraceEntry('ordinary', service.name, tool.name, callArgs, result.data ?? result.result, true);
                 const item = {
                     serviceId: service.id,
                     serviceName: service.name,
@@ -1427,6 +1654,7 @@ const runMcpToolRouter = async (chat, history) => {
                 results.push(item);
             } catch (error) {
                 console.error(`[MCP路由] 调用失败: ${service.name}.${tool.name}`, error);
+                appendMcpTraceEntry('ordinary', service.name, tool.name, callArgs, error, false);
                 const item = {
                     serviceId: service.id,
                     serviceName: service.name,
@@ -1461,17 +1689,22 @@ const runMcpMemoryReadStage = async (chat, history) => {
 
     const results = [];
     const contextText = buildMcpToolExecutionContext(chat, history, '当前阶段：记忆读取');
+    updateMcpTraceHeadline('正在读取记忆...');
 
     for (const service of services) {
         if (!service.memoryReadTool) continue;
+        ensureMcpTraceCard(chat, appState.currentMcpTraceContext?.userMessageTimestamp || null);
         const tool = (service.tools || []).find(item => item.name === service.memoryReadTool);
-        if (!tool) {
+        if (!tool || !isMcpToolOpen(tool)) {
             console.error(`[MCP记忆读取] 工具不存在：${service.name}.${service.memoryReadTool}`);
+            appendMcpTraceEntry('memory_read', service.name, service.memoryReadTool || '', {}, { error: '工具不存在' }, false);
             continue;
         }
         try {
             const args = await fillMcpToolArguments(service, tool, contextText, `记忆读取：${tool.name}`);
+            updateMcpTraceHeadline(`正在读取记忆：${service.name}.${tool.name}`);
             const result = await callMcpTool(service, tool.name, args);
+            appendMcpTraceEntry('memory_read', service.name, tool.name, args, result.data ?? result.result, true);
             results.push({
                 serviceId: service.id,
                 serviceName: service.name,
@@ -1482,6 +1715,7 @@ const runMcpMemoryReadStage = async (chat, history) => {
             });
         } catch (error) {
             console.error(`[MCP记忆读取] 失败：${service.name}.${service.memoryReadTool}`, error);
+            appendMcpTraceEntry('memory_read', service.name, service.memoryReadTool || '', {}, error, false);
             results.push({
                 serviceId: service.id,
                 serviceName: service.name,
@@ -1504,12 +1738,14 @@ const runMcpMemoryWriteStage = async (chat, summary, meta = {}) => {
 
     let written = 0;
     let skipped = 0;
+    const initialTraceEntryCount = getActiveMcpTrace()?.entryCount || 0;
     const writeHash = createSafeHash(`${chat?.id || appState.activeChatId || ''}|${summary}`);
     const contextText = buildMcpToolExecutionContext(chat, [], [
         `总结内容: ${summary}`,
         `来源: ${meta.source || 'summary'}`,
         `总结哈希: ${writeHash}`
     ].join('\n'));
+    updateMcpTraceHeadline('正在写入记忆...');
 
     for (const service of services) {
         if (!service.memoryWriteTool) continue;
@@ -1518,14 +1754,18 @@ const runMcpMemoryWriteStage = async (chat, summary, meta = {}) => {
             skipped += 1;
             continue;
         }
+        ensureMcpTraceCard(chat, appState.currentMcpTraceContext?.userMessageTimestamp || null);
         const tool = (service.tools || []).find(item => item.name === service.memoryWriteTool);
-        if (!tool) {
+        if (!tool || !isMcpToolOpen(tool)) {
             console.error(`[MCP记忆写入] 工具不存在：${service.name}.${service.memoryWriteTool}`);
+            appendMcpTraceEntry('memory_write', service.name, service.memoryWriteTool || '', {}, { error: '工具不存在' }, false);
             continue;
         }
         try {
             const args = await fillMcpToolArguments(service, tool, contextText, `记忆写入：${tool.name}`);
-            await callMcpTool(service, tool.name, args);
+            updateMcpTraceHeadline(`正在写入记忆：${service.name}.${tool.name}`);
+            const result = await callMcpTool(service, tool.name, args);
+            appendMcpTraceEntry('memory_write', service.name, tool.name, args, result.data ?? result.result, true);
             normalized.lastMemoryWriteHash = writeHash;
             const target = (appState.mcpServers || []).find(item => item.id === normalized.id);
             if (target) {
@@ -1534,11 +1774,17 @@ const runMcpMemoryWriteStage = async (chat, summary, meta = {}) => {
             written += 1;
         } catch (error) {
             console.error(`[MCP记忆写入] 失败：${service.name}.${service.memoryWriteTool}`, error);
+            appendMcpTraceEntry('memory_write', service.name, service.memoryWriteTool || '', {}, error, false);
         }
     }
 
     if (written > 0) {
         await persistMcpConfigs();
+    }
+
+    const trace = getActiveMcpTrace();
+    if (trace && trace.entryCount > initialTraceEntryCount) {
+        finishMcpTraceCard(`已完成 ${trace.entryCount} 次调用`);
     }
 
     return { written, skipped };
@@ -1580,6 +1826,7 @@ const renderMcpSettings = () => {
     services.forEach(service => {
         const card = document.createElement('div');
         card.className = 'mcp-service-card';
+        const openTools = getOpenMcpTools(service);
         const toolsHtml = service.tools.length ? `
             <div class="mcp-tool-list">
                 ${service.tools.map(tool => `
@@ -1588,11 +1835,10 @@ const renderMcpSettings = () => {
                             <div class="mcp-tool-name">${escapeHtml(tool.name)}</div>
                             <div class="mcp-tool-description">${escapeHtml(tool.description || '无描述')}</div>
                         </div>
-                        <select class="mcp-policy-select">
-                            <option value="auto" ${tool.policy === 'auto' ? 'selected' : ''}>auto</option>
-                            <option value="confirm" ${tool.policy === 'confirm' ? 'selected' : ''}>confirm</option>
-                            <option value="off" ${tool.policy === 'off' ? 'selected' : ''}>off</option>
-                        </select>
+                        <label class="mcp-tool-open-toggle">
+                            <input type="checkbox" class="mcp-tool-allow-toggle" ${isMcpToolOpen(tool) ? 'checked' : ''}>
+                            <span>开放给 AI</span>
+                        </label>
                     </div>
                 `).join('')}
             </div>` : '';
@@ -1610,8 +1856,9 @@ const renderMcpSettings = () => {
             <div class="mcp-service-meta">
                 <span class="mcp-pill ${service.enabled ? 'enabled' : 'disabled'}">${service.enabled ? '已启用' : '已停用'}</span>
                 <span class="mcp-pill">${service.authType === 'bearer' ? (service.hasToken ? 'Bearer 已保存' : 'Bearer 未填') : '无认证'}</span>
-                <span class="mcp-pill">${service.tools.length} 个工具</span>
+                <span class="mcp-pill">${openTools.length}/${service.tools.length} 开放</span>
                 <span class="mcp-pill">${service.bindingMode === 'selected' ? '指定角色' : '全部角色'}</span>
+                <span class="mcp-pill">${service.ordinaryToolsEnabled ? '普通调用开启' : '普通调用关闭'}</span>
                 <span class="mcp-pill">${service.memoryEnabled ? '记忆开启' : '记忆关闭'}</span>
             </div>
             ${toolsHtml}
@@ -1638,6 +1885,7 @@ const openMcpEditor = (serviceId = null) => {
     document.getElementById('mcp-editor-panel').style.display = 'block';
     document.getElementById('mcp-token-group').style.display = (service?.authType === 'bearer') ? 'block' : 'none';
     document.getElementById('mcp-binding-mode-select').value = service?.bindingMode === 'selected' ? 'selected' : 'all';
+    document.getElementById('mcp-ordinary-toggle').classList.toggle('active', service?.ordinaryToolsEnabled !== false);
     document.getElementById('mcp-memory-toggle').classList.toggle('active', !!service?.memoryEnabled);
     renderMcpEditorPersonaOptions(service);
     renderMcpEditorToolSelects(service);
@@ -1659,6 +1907,7 @@ const collectMcpEditorService = () => {
     const authType = document.getElementById('mcp-auth-type-select').value;
     const bindingMode = document.getElementById('mcp-binding-mode-select').value === 'selected' ? 'selected' : 'all';
     const boundPersonaIds = bindingMode === 'selected' ? collectMcpEditorPersonaIds() : [];
+    const ordinaryToolsEnabled = document.getElementById('mcp-ordinary-toggle').classList.contains('active');
     const memoryEnabled = document.getElementById('mcp-memory-toggle').classList.contains('active');
     const memoryReadTool = document.getElementById('mcp-memory-read-tool-select').value || '';
     const memoryWriteTool = document.getElementById('mcp-memory-write-tool-select').value || '';
@@ -1679,6 +1928,7 @@ const collectMcpEditorService = () => {
         hasToken: authType === 'bearer' ? !!existing?.hasToken : false,
         bindingMode,
         boundPersonaIds,
+        ordinaryToolsEnabled,
         memoryEnabled,
         memoryReadTool,
         memoryWriteTool
@@ -1775,6 +2025,10 @@ const bindMcpSettingsEvents = () => {
         const toggle = document.getElementById('mcp-enabled-toggle');
         if (toggle) toggle.classList.toggle('active');
     });
+    setOnClick('mcp-ordinary-toggle', () => {
+        const toggle = document.getElementById('mcp-ordinary-toggle');
+        if (toggle) toggle.classList.toggle('active');
+    });
     const bindingModeSelect = document.getElementById('mcp-binding-mode-select');
     if (bindingModeSelect && bindingModeSelect.dataset.mcpBound !== 'true') {
         bindingModeSelect.dataset.mcpBound = 'true';
@@ -1795,6 +2049,25 @@ const bindMcpSettingsEvents = () => {
     const list = document.getElementById('mcp-service-list');
     if (list && list.dataset.mcpBound !== 'true') {
         list.dataset.mcpBound = 'true';
+        list.addEventListener('change', async (event) => {
+            const checkbox = event.target.closest('.mcp-tool-allow-toggle');
+            if (!checkbox) return;
+            const row = checkbox.closest('.mcp-tool-row');
+            const serviceId = row?.dataset?.serviceId;
+            const toolKey = row?.dataset?.toolKey;
+            if (!serviceId || !toolKey) return;
+            const service = (appState.mcpServers || []).find(item => item.id === serviceId);
+            if (!service) return;
+            service.tools = (service.tools || []).map(tool => tool.key === toolKey ? {
+                ...tool,
+                policy: checkbox.checked ? 'confirm' : 'off'
+            } : tool);
+            await persistMcpConfigs();
+            renderMcpSettings();
+            if (currentMcpEditingId === service.id) {
+                renderMcpEditorToolSelects(service);
+            }
+        });
         list.addEventListener('click', async (event) => {
             const target = event.target.closest('[data-action]');
             if (!target) return;
@@ -1815,15 +2088,6 @@ const bindMcpSettingsEvents = () => {
                 renderMcpSettings();
                 if (currentMcpEditingId === serviceId) closeMcpEditor();
             }
-        });
-        list.addEventListener('change', async (event) => {
-            if (!event.target.classList.contains('mcp-policy-select')) return;
-            const row = event.target.closest('.mcp-tool-row');
-            const service = (appState.mcpServers || []).find(item => item.id === row?.dataset.serviceId);
-            const tool = service?.tools.find(item => item.key === row.dataset.toolKey);
-            if (!tool) return;
-            tool.policy = event.target.value;
-            await persistMcpConfigs();
         });
     }
 };
@@ -3296,6 +3560,8 @@ const appState = {
     secondaryApiConfig: { url: '', key: '', model: '', presetName: '' }, // 副API配置
     mcpServers: [],
     mcpRuntime: {},
+    currentMcpTrace: null,
+    currentMcpTraceContext: null,
     personas: { ai: [], my: [] }, 
     chats: {},
     activeChatId: null,
@@ -10712,11 +10978,17 @@ ${shopItemsPrompt}
         
         let recentHistory = chat.history;
         const mcpContextMessages = [];
+        let mcpStageRan = false;
+        let mcpStageFailed = false;
         if (!isGroupChat) {
+            appState.currentMcpTraceContext = {
+                chatId: chat.id || '',
+                userMessageTimestamp: lastUserMessage?.timestamp || null
+            };
+            mcpStageRan = true;
             const baseMcpHistory = Array.isArray(recentHistory) ? recentHistory : [];
-            let mcpMemoryStage = { results: [] };
             try {
-                mcpMemoryStage = await runMcpMemoryReadStage(chat, baseMcpHistory);
+                const mcpMemoryStage = await runMcpMemoryReadStage(chat, baseMcpHistory);
                 const successfulMemoryResults = Array.isArray(mcpMemoryStage?.results)
                     ? mcpMemoryStage.results.filter(item => item && item.ok)
                     : [];
@@ -10728,6 +11000,7 @@ ${shopItemsPrompt}
                 }
             } catch (error) {
                 console.error('[MCP记忆读取] 失败:', error);
+                mcpStageFailed = true;
             }
 
             try {
@@ -10744,6 +11017,11 @@ ${shopItemsPrompt}
                 }
             } catch (error) {
                 console.error('[MCP工具路由] 失败:', error);
+                mcpStageFailed = true;
+            }
+
+            if (mcpStageRan) {
+                finishMcpTraceCard(mcpStageFailed ? '已完成，但包含失败调用' : `已完成 ${appState.currentMcpTrace?.entryCount || 0} 次调用`);
             }
         }
 
@@ -14931,6 +15209,13 @@ setupFileUploadHelper('widget-avatar-upload-input', null, async (src) => {
         appendMessage(messageData);
         chat.history.push(messageData);
         await dbStorage.set(KEYS.CHATS, appState.chats);
+
+        if (!chat.type || chat.type !== 'group') {
+            appState.currentMcpTraceContext = {
+                chatId: chat.id || '',
+                userMessageTimestamp: timestamp
+            };
+        }
 
         // 检查并触发自动总结
         await checkAndTriggerAutoSummary(appState.activeChatId);

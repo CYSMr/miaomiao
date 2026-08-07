@@ -863,7 +863,7 @@
                 <div id="mcp-service-list" class="mcp-service-list"></div>
                 <div id="mcp-empty-state" class="mcp-empty-state">
                     <div class="mcp-empty-title">暂无 MCP 服务</div>
-                    <div class="mcp-empty-copy">添加 Streamable HTTP 服务后，可以在这里测试协议并设置工具策略。</div>
+                    <div class="mcp-empty-copy">添加 Streamable HTTP 服务后，可以在这里测试协议，并用复选框决定哪些工具开放给 AI。</div>
                 </div>
 
                 <div id="mcp-editor-panel" class="mcp-editor-panel" style="display: none;">
@@ -897,6 +897,12 @@
                             <div class="toggle-knob"></div>
                         </div>
                     </div>
+                    <div class="settings-item mcp-enable-row">
+                        <span class="item-label">开放给 AI 自主调用</span>
+                        <div id="mcp-ordinary-toggle" class="toggle-switch active">
+                            <div class="toggle-knob"></div>
+                        </div>
+                    </div>
                     <div class="form-group">
                         <label for="mcp-binding-mode-select">角色绑定模式</label>
                         <select id="mcp-binding-mode-select">
@@ -919,7 +925,7 @@
                         <select id="mcp-memory-read-tool-select"></select>
                         <label style="margin-top: 10px;">总结写入工具</label>
                         <select id="mcp-memory-write-tool-select"></select>
-                        <div class="mcp-muted-note">工具名直接来自该服务的 tools/list，保存后程序会自动执行读取和写入阶段。</div>
+                        <div class="mcp-muted-note">这里只会列出已勾选的工具；保存后程序会按“先记忆、再普通路由、后主回复”的顺序执行。</div>
                     </div>
                     <div class="mcp-editor-actions">
                         <button id="mcp-test-btn" class="action-btn-secondary">测试连接</button>
