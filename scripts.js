@@ -1464,7 +1464,7 @@ const buildMcpToolExecutionContext = (chat, history, extra = '') => {
 };
 
 const buildMcpContextMessage = (label, payload) => ({
-    role: 'assistant',
+    role: 'user',
     content: `【${label}】\n${stringifyMcpContent(payload)}`
 });
 
@@ -11315,6 +11315,7 @@ ${shopItemsPrompt}
         const mcpContextMessages = [];
         let mcpStageRan = false;
         let mcpStageFailed = false;
+        let currentMcpTraceId = '';
         if (!isGroupChat) {
             appState.currentMcpTraceContext = {
                 chatId: chat.id || '',
@@ -11340,10 +11341,21 @@ ${shopItemsPrompt}
 
             try {
                 const mcpToolStage = await runMcpToolRouter(chat, baseMcpHistory);
+                const successfulToolResults = Array.isArray(mcpToolStage?.results)
+                    ? mcpToolStage.results.filter(item => item && item.ok)
+                    : [];
+                if (successfulToolResults.length) {
+                    mcpContextMessages.push(buildMcpContextMessage('MCP 普通工具调用结果', {
+                        stage: 'ordinary',
+                        results: successfulToolResults
+                    }));
+                }
             } catch (error) {
                 console.error('[MCP工具路由] 失败:', error);
                 mcpStageFailed = true;
             }
+
+            currentMcpTraceId = getActiveMcpTrace()?.traceId || '';
         }
 
         if (mcpStageRan) {
@@ -11352,8 +11364,12 @@ ${shopItemsPrompt}
 
         const memoryRounds = chat.memoryRounds || 0;
         recentHistory = getRecentHistoryForMemoryRounds(chat.history, memoryRounds);
-        const historyForAPI = processHistoryForAPI(recentHistory);
-        let messages = [{ role: 'system', content: systemPrompt }, ...mcpContextMessages, ...historyForAPI];
+        const historyForAPI = processHistoryForAPI(recentHistory.filter(message => {
+            if (!currentMcpTraceId) return true;
+            const tracePayload = getMcpTracePayload(message);
+            return (tracePayload?.traceId || message?.traceId || '') !== currentMcpTraceId;
+        }));
+        let messages = [{ role: 'system', content: systemPrompt }, ...historyForAPI, ...mcpContextMessages];
         
         if (chat.timeAwareness) {
             const now = new Date();
