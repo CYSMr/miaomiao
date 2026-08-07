@@ -33123,20 +33123,16 @@ function renderSummaryCards(chatId) {
         // 全局标记 - 根据当前聊天的全局记忆开关状态显示
         const globalBadge = chat.globalMemoryEnabled ? '<span style="background: #007AFF; color: white; padding: 2px 8px; border-radius: 10px; font-size: 11px; margin-left: 8px;">全局</span>' : '';
         
-        // 检查内容是否需要展开按钮（超过5行）
-        const lineCount = memory.content.split('\n').length;
-        const needsExpand = lineCount > 5 || memory.content.length > 300;
-        
         return `
         <div class="summary-card" data-card-index="${actualIndex}">
             <div class="summary-card-header">
                 <span class="summary-card-time">📅 ${timeStr}${globalBadge}</span>
             </div>
             <div class="summary-card-content collapsed" data-content-index="${actualIndex}">${escapeHtml(memory.content)}</div>
-            ${needsExpand ? `<button class="summary-expand-btn" onclick="toggleSummaryExpand(${actualIndex})">
+            <button class="summary-expand-btn" onclick="toggleSummaryExpand(${actualIndex})" style="display: none;">
                 <span class="expand-text">展开</span>
                 <span class="expand-icon">▼</span>
-            </button>` : ''}
+            </button>
             <div class="summary-card-actions">
                 <button class="summary-card-btn" onclick="editSummaryMemory(${actualIndex})">编辑</button>
                 <button class="summary-card-btn delete" onclick="deleteSummaryMemory(${actualIndex})">删除</button>
@@ -33144,6 +33140,19 @@ function renderSummaryCards(chatId) {
         </div>
         `;
     }).join('');
+
+    // 文本是否超过 5 行取决于实际卡片宽度，不能用换行数或字符数猜测。
+    // 下一帧模态窗口已经可见，再按真实渲染高度决定是否显示展开按钮。
+    requestAnimationFrame(() => {
+        container.querySelectorAll('.summary-card').forEach(card => {
+            const content = card.querySelector('.summary-card-content');
+            const expandButton = card.querySelector('.summary-expand-btn');
+            if (!content || !expandButton || !content.clientHeight) return;
+
+            const hasOverflow = content.scrollHeight > content.clientHeight + 1;
+            expandButton.style.display = hasOverflow ? 'inline-flex' : 'none';
+        });
+    });
     
     // 更新记忆数量显示
     updateMemoryCount(chatId);
