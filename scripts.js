@@ -1526,6 +1526,15 @@ const queueChatPersist = () => {
     });
 };
 
+const getMcpChatId = (chat) => {
+    if (!chat || typeof chat !== 'object') return '';
+    if (chat.id) return chat.id;
+    const contextChatId = appState.currentMcpTraceContext?.chatId || '';
+    if (contextChatId && appState.chats?.[contextChatId] === chat) return contextChatId;
+    if (appState.activeChatId && appState.chats?.[appState.activeChatId] === chat) return appState.activeChatId;
+    return Object.keys(appState.chats || {}).find(chatId => appState.chats[chatId] === chat) || '';
+};
+
 const removeMcpTraceHistoryEntry = (chat, traceId) => {
     if (!chat || !traceId || !Array.isArray(chat.history)) return false;
     const originalLength = chat.history.length;
@@ -1544,19 +1553,20 @@ const removeMcpTraceHistoryEntry = (chat, traceId) => {
 
 const buildMcpTraceHistoryEntry = (chat, userMessageTimestamp) => {
     const traceId = createMcpId();
+    const chatId = getMcpChatId(chat);
     const timestamp = Date.now();
     return {
         role: 'system',
         type: 'mcp_trace',
         hidden: true,
         traceId,
-        chatId: chat?.id || '',
+        chatId,
         userMessageTimestamp: userMessageTimestamp || null,
         timestamp,
         content: {
             type: 'mcp_trace',
             traceId,
-            chatId: chat?.id || '',
+            chatId,
             userMessageTimestamp: userMessageTimestamp || null,
             state: 'running',
             summary: '正在准备...',
@@ -1676,7 +1686,7 @@ const createMcpTraceCard = (chat, userMessageTimestamp, historyEntry = null) => 
     if (!messagesDiv) return null;
     const traceEntry = historyEntry && typeof historyEntry === 'object' ? historyEntry : buildMcpTraceHistoryEntry(chat, userMessageTimestamp);
     if (!historyEntry) {
-        const targetChat = chat?.id ? appState.chats?.[chat.id] : null;
+        const targetChat = appState.chats?.[getMcpChatId(chat)];
         if (targetChat) {
             targetChat.history = Array.isArray(targetChat.history) ? targetChat.history : [];
             targetChat.history.push(traceEntry);
@@ -1687,7 +1697,7 @@ const createMcpTraceCard = (chat, userMessageTimestamp, historyEntry = null) => 
     const card = document.createElement('div');
     card.className = 'mcp-trace-card mcp-trace-expanded mcp-trace-running';
     card.classList.toggle('mcp-trace-ui-hidden', !isMcpTraceVisible());
-    card.dataset.chatId = traceContent.chatId || chat?.id || '';
+    card.dataset.chatId = traceContent.chatId || getMcpChatId(chat);
     card.dataset.userTimestamp = traceContent.userMessageTimestamp ? String(traceContent.userMessageTimestamp) : '';
     card.dataset.traceId = traceContent.traceId || traceEntry.traceId || '';
     card.dataset.state = traceContent.state || 'running';
@@ -1719,7 +1729,7 @@ const createMcpTraceCard = (chat, userMessageTimestamp, historyEntry = null) => 
     const deleteButton = card.querySelector('.mcp-trace-delete');
 
     const runtime = {
-        chatId: traceContent.chatId || chat?.id || '',
+        chatId: traceContent.chatId || getMcpChatId(chat),
         userMessageTimestamp: traceContent.userMessageTimestamp || userMessageTimestamp || null,
         traceId: traceContent.traceId || traceEntry.traceId || createMcpId(),
         element: card,
@@ -1814,7 +1824,7 @@ const getActiveMcpTrace = () => {
 
 const ensureMcpTraceCard = (chat, userMessageTimestamp) => {
     const context = {
-        chatId: chat?.id || '',
+        chatId: getMcpChatId(chat),
         userMessageTimestamp: userMessageTimestamp || null
     };
     const trace = getActiveMcpTrace();
@@ -11427,7 +11437,7 @@ ${shopItemsPrompt}
         let currentMcpTraceId = '';
         if (!isGroupChat) {
             appState.currentMcpTraceContext = {
-                chatId: chat.id || '',
+                chatId: getMcpChatId(chat),
                 userMessageTimestamp: lastUserMessage?.timestamp || null
             };
             mcpStageRan = true;
@@ -15684,7 +15694,7 @@ setupFileUploadHelper('widget-avatar-upload-input', null, async (src) => {
 
         if (!chat.type || chat.type !== 'group') {
             appState.currentMcpTraceContext = {
-                chatId: chat.id || '',
+                chatId: getMcpChatId(chat),
                 userMessageTimestamp: timestamp
             };
         }
