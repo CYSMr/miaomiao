@@ -443,106 +443,1310 @@ const KEYS = {
     DEFAULT_BACKGROUND_TEXTURE: 'default_background_texture_v1',
     TOP_BAR_TEXTURE: 'top_bar_texture_v1',
     BOTTOM_BAR_TEXTURE: 'bottom_bar_texture_v1',
+    MCP_CONFIGS: 'mcp_configs_v1',
     DIARY_ENTRIES: 'diary_entries_v1',
     FORUM_DATA: 'forum_data',
     WORK_BACKGROUND: 'work_background_v1'
 };
 
-// === 播放列表弹窗函数（提前定义以避免作用域问题）===
-function openPlaylistSheet() {
-    // 检查 renderPlaylist 函数是否已定义，如果已定义则调用
-    if (typeof renderPlaylist === 'function') {
-        renderPlaylist(); // 打开前先渲染最新列表
-    }
-    document.getElementById('playlist-sheet-overlay').classList.add('visible');
-    document.getElementById('playlist-sheet').classList.add('visible');
-}
+const MCP_SECRET_STORAGE_KEY = 'mcp_secret_tokens_v1';
+const MCP_PROTOCOL_VERSION = '2025-03-26';
+const MCP_DEFAULT_TIMEOUT_MS = 15000;
 
-function closePlaylistSheet() {
-    const overlay = document.getElementById('playlist-sheet-overlay');
-    const sheet = document.getElementById('playlist-sheet');
-    
-    if (overlay) {
-        overlay.classList.remove('visible');
-        setTimeout(() => {
-            overlay.style.display = 'none';
-        }, 400); // 等待动画完成
-    }
-    
-    if (sheet) {
-        sheet.classList.remove('visible');
-        setTimeout(() => {
-            sheet.style.display = 'none';
-        }, 400); // 等待动画完成
-    }
-}
+const createMcpId = () => `mcp_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+const createPersonaId = (kind = 'persona') => `persona_${kind}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 
-// 数据库清理函数已禁用 - 保护用户数据不被自动删除
-// 用户不希望数据被清理，此功能已永久停用
-async function cleanupDatabaseStorage() {
-    // 此函数已被禁用以保护用户数据
-    console.log('ℹ️ 数据库清理功能已禁用 - 保护用户数据，不执行任何清理操作');
-    return false;
-}
+const createSafeHash = (value) => {
+    const text = String(value || '');
+    let hash = 5381;
+    for (let i = 0; i < text.length; i += 1) {
+        hash = ((hash << 5) + hash) ^ text.charCodeAt(i);
+    }
+    return (hash >>> 0).toString(16);
+};
 
-// 存储空间使用情况检查（仅监控，不清理）
-async function checkStorageUsage() {
+const normalizePersonaRecord = (persona, kind = 'persona') => {
+    const raw = persona && typeof persona === 'object' ? persona : {};
+    const normalized = {
+        ...raw,
+        id: raw.id || createPersonaId(kind),
+        name: raw.name || '未命名',
+        content: raw.content || '',
+        avatar: raw.avatar || DEFAULT_AVATAR
+    };
+    return normalized;
+};
+
+const normalizePersonaCollection = (items, kind = 'persona') => {
+    const list = Array.isArray(items) ? items : [];
+    let changed = !Array.isArray(items);
+    const normalized = list.map((item) => {
+        const next = normalizePersonaRecord(item, kind);
+        if (!item || typeof item !== 'object' || item.id !== next.id) {
+            changed = true;
+        }
+        return next;
+    });
+    return { items: normalized, changed };
+};
+
+const getChatPersonaBindingIds = (chat) => {
+    const ids = [];
+    const seen = new Set();
+    const pushPersona = (persona) => {
+        if (!persona || typeof persona !== 'object' || !persona.id || seen.has(persona.id)) return;
+        seen.add(persona.id);
+        ids.push(persona.id);
+    };
+    if (!chat?.personas) return ids;
+    if (Array.isArray(chat.personas.ai)) {
+        chat.personas.ai.forEach(pushPersona);
+    } else {
+        pushPersona(chat.personas.ai);
+    }
+    if (Array.isArray(chat.personas.my)) {
+        chat.personas.my.forEach(pushPersona);
+    } else {
+        pushPersona(chat.personas.my);
+    }
+    return ids;
+};
+
+const getAllPersonaBindingChoices = () => {
+    const choices = [];
+    const seen = new Set();
+    const addChoice = (persona, kind) => {
+        if (!persona || typeof persona !== 'object' || !persona.id || seen.has(persona.id)) return;
+        seen.add(persona.id);
+        choices.push({
+            id: persona.id,
+            label: `${kind === 'my' ? '我' : 'AI'} · ${persona.name || '未命名'}`
+        });
+    };
+    (appState.personas?.ai || []).forEach(persona => addChoice(persona, 'ai'));
+    (appState.personas?.my || []).forEach(persona => addChoice(persona, 'my'));
+    return choices;
+};
+
+const getPersonaById = (personaId) => {
+    if (!personaId) return null;
+    const libraries = [appState.personas?.ai || [], appState.personas?.my || []];
+    for (const library of libraries) {
+        const matched = library.find(persona => persona.id === personaId);
+        if (matched) return matched;
+    }
+    return null;
+};
+
+const getPersonaLabelById = (personaId) => {
+    const persona = getPersonaById(personaId);
+    return persona ? `${persona.name || '未命名'} (${persona.id})` : personaId;
+};
+
+const getMcpServicePersonaBindingLabel = (service) => {
+    if (!service) return '未绑定';
+    if (service.bindingMode !== 'selected') {
+        return '全部角色';
+    }
+    const ids = Array.isArray(service.boundPersonaIds) ? service.boundPersonaIds.filter(Boolean) : [];
+    if (!ids.length) return '指定角色：未选择';
+    const names = ids.map(getPersonaLabelById).slice(0, 3);
+    const suffix = ids.length > 3 ? ` 等 ${ids.length} 个` : '';
+    return `指定角色：${names.join('、')}${suffix}`;
+};
+
+const getMcpServiceMemoryLabel = (service) => {
+    if (!service?.memoryEnabled) return '记忆 MCP：关闭';
+    const readTool = service.memoryReadTool || '未选读取';
+    const writeTool = service.memoryWriteTool || '未选写入';
+    return `记忆 MCP：${readTool} / ${writeTool}`;
+};
+
+const renderMcpEditorPersonaOptions = (service) => {
+    const container = document.getElementById('mcp-bound-persona-list');
+    if (!container) return;
+
+    const choices = getAllPersonaBindingChoices();
+    const selectedIds = new Set((service?.boundPersonaIds || []).filter(Boolean));
+    if (!choices.length) {
+        container.innerHTML = '<div class="mcp-muted-note">还没有可绑定的角色，请先创建人设。</div>';
+        return;
+    }
+
+    container.innerHTML = choices.map(choice => `
+        <label class="mcp-persona-check">
+            <input type="checkbox" value="${choice.id}" ${selectedIds.has(choice.id) ? 'checked' : ''}>
+            <span>${escapeHtml(choice.label)}</span>
+        </label>
+    `).join('');
+};
+
+const renderMcpEditorToolSelects = (service) => {
+    const tools = Array.isArray(service?.tools) ? service.tools : [];
+    const readSelect = document.getElementById('mcp-memory-read-tool-select');
+    const writeSelect = document.getElementById('mcp-memory-write-tool-select');
+    if (!readSelect || !writeSelect) return;
+
+    const buildOptions = (selectedValue = '') => {
+        if (!tools.length) {
+            return '<option value="">暂无可选工具</option>';
+        }
+        const options = ['<option value="">请选择工具</option>'];
+        tools.forEach(tool => {
+            const name = tool?.name || '';
+            if (!name) return;
+            options.push(`<option value="${escapeHtml(name)}"${selectedValue === name ? ' selected' : ''}>${escapeHtml(name)}</option>`);
+        });
+        return options.join('');
+    };
+
+    readSelect.innerHTML = buildOptions(service?.memoryReadTool || '');
+    writeSelect.innerHTML = buildOptions(service?.memoryWriteTool || '');
+    readSelect.value = service?.memoryReadTool || '';
+    writeSelect.value = service?.memoryWriteTool || '';
+};
+
+const refreshMcpEditorVisibility = () => {
+    const bindingMode = document.getElementById('mcp-binding-mode-select')?.value || 'all';
+    const memoryEnabled = document.getElementById('mcp-memory-toggle')?.classList.contains('active');
+    const personaRow = document.getElementById('mcp-bound-persona-group');
+    const memoryRow = document.getElementById('mcp-memory-tool-group');
+    if (personaRow) personaRow.style.display = bindingMode === 'selected' ? 'block' : 'none';
+    if (memoryRow) memoryRow.style.display = memoryEnabled ? 'block' : 'none';
+};
+
+const collectMcpEditorPersonaIds = () => {
+    return Array.from(document.querySelectorAll('#mcp-bound-persona-list input[type="checkbox"]:checked'))
+        .map(input => input.value)
+        .filter(Boolean);
+};
+
+const findPersonaInLibrary = (persona, kind = 'persona') => {
+    const library = Array.isArray(appState.personas?.[kind]) ? appState.personas[kind] : [];
+    if (!persona || typeof persona !== 'object') return null;
+    if (persona.id) {
+        const byId = library.find(item => item.id === persona.id);
+        if (byId) return byId;
+    }
+    if (persona.name && persona.content) {
+        const bySignature = library.find(item => item.name === persona.name && item.content === persona.content);
+        if (bySignature) return bySignature;
+    }
+    if (persona.name) {
+        const byName = library.find(item => item.name === persona.name);
+        if (byName) return byName;
+    }
+    return null;
+};
+
+const normalizePersonaReference = (persona, kind = 'persona') => {
+    const matched = findPersonaInLibrary(persona, kind);
+    return normalizePersonaRecord(matched || persona, kind);
+};
+
+const normalizeChatPersonaBindings = (chat) => {
+    if (!chat || !chat.personas) return false;
+    let changed = false;
+    const normalizeSlot = (slot, kind) => {
+        if (Array.isArray(slot)) {
+            const seen = new Set();
+            const normalized = [];
+            slot.forEach((item) => {
+                const next = normalizePersonaReference(item, kind);
+                if (!seen.has(next.id)) {
+                    seen.add(next.id);
+                    normalized.push(next);
+                }
+                if (!item || typeof item !== 'object' || item.id !== next.id || item.name !== next.name) {
+                    changed = true;
+                }
+            });
+            return normalized;
+        }
+        if (slot && typeof slot === 'object') {
+            const next = normalizePersonaReference(slot, kind);
+            if (slot.id !== next.id || slot.name !== next.name || slot.content !== next.content) {
+                changed = true;
+            }
+            return next;
+        }
+        return slot;
+    };
+
+    chat.personas.ai = normalizeSlot(chat.personas.ai, 'ai');
+    chat.personas.my = normalizeSlot(chat.personas.my, 'my');
+    return changed;
+};
+
+const normalizePersonaAndChatState = async () => {
+    let changed = false;
+    const aiResult = normalizePersonaCollection(appState.personas?.ai || [], 'ai');
+    const myResult = normalizePersonaCollection(appState.personas?.my || [], 'my');
+    if (!appState.personas || typeof appState.personas !== 'object') {
+        appState.personas = { ai: [], my: [] };
+    }
+    if (aiResult.changed) {
+        appState.personas.ai = aiResult.items;
+        changed = true;
+    }
+    if (myResult.changed) {
+        appState.personas.my = myResult.items;
+        changed = true;
+    }
+
+    for (const chatId in appState.chats || {}) {
+        const chat = appState.chats[chatId];
+        if (normalizeChatPersonaBindings(chat)) {
+            changed = true;
+        }
+    }
+
+    if (changed) {
+        await dbStorage.set(KEYS.PERSONA_AI, appState.personas.ai);
+        await dbStorage.set(KEYS.PERSONA_MY, appState.personas.my);
+        await dbStorage.set(KEYS.CHATS, appState.chats);
+    }
+
+    return changed;
+};
+
+const normalizeMcpTool = (tool, serviceId = '') => ({
+    key: tool.key || `${serviceId || 'mcp'}:${tool.name || ''}`,
+    name: tool.name || '',
+    description: tool.description || '',
+    inputSchema: tool.inputSchema || tool.input_schema || null,
+    policy: ['auto', 'confirm', 'off'].includes(tool.policy) ? tool.policy : 'confirm'
+});
+
+const normalizeMcpConfig = (service) => ({
+    id: service.id || createMcpId(),
+    name: service.name || '未命名服务',
+    url: service.url || '',
+    authType: service.authType === 'bearer' ? 'bearer' : 'none',
+    enabled: service.enabled !== false,
+    hasToken: !!service.hasToken,
+    bindingMode: service.bindingMode === 'selected' ? 'selected' : 'all',
+    boundPersonaIds: Array.isArray(service.boundPersonaIds) ? [...new Set(service.boundPersonaIds.filter(Boolean))] : [],
+    memoryEnabled: !!service.memoryEnabled,
+    memoryReadTool: service.memoryReadTool || '',
+    memoryWriteTool: service.memoryWriteTool || '',
+    lastMemoryWriteHash: service.lastMemoryWriteHash || '',
+    tools: Array.isArray(service.tools) ? service.tools.map(tool => normalizeMcpTool(tool, service.id)) : [],
+    lastTest: service.lastTest || null
+});
+
+const sanitizeMcpConfigsForBackup = (configs) => (Array.isArray(configs) ? configs : []).map(service => {
+    const normalized = normalizeMcpConfig(service);
+    return {
+        ...normalized,
+        hasToken: normalized.authType === 'bearer' ? !!normalized.hasToken : false
+    };
+});
+
+const invalidateMcpRuntime = (serviceId = null) => {
+    if (!appState.mcpRuntime) {
+        appState.mcpRuntime = {};
+        return;
+    }
+    if (serviceId) {
+        delete appState.mcpRuntime[serviceId];
+    } else {
+        appState.mcpRuntime = {};
+    }
+};
+
+const persistMcpConfigs = async () => {
+    appState.mcpServers = (appState.mcpServers || []).map(normalizeMcpConfig);
+    await dbStorage.set(KEYS.MCP_CONFIGS, sanitizeMcpConfigsForBackup(appState.mcpServers));
+    invalidateMcpRuntime();
+    updateMcpServiceCount();
+};
+
+const isLocalMcpUrl = (url) => ['localhost', '127.0.0.1', '[::1]', '::1'].includes(url.hostname);
+
+const validateMcpUrl = (rawUrl) => {
+    let parsed;
     try {
-        // 检查存储使用情况
-        if ('storage' in navigator && 'estimate' in navigator.storage) {
-            const estimate = await navigator.storage.estimate();
-            const usedMB = (estimate.usage / 1024 / 1024).toFixed(2);
-            const quotaMB = (estimate.quota / 1024 / 1024).toFixed(2);
-            const usagePercent = ((estimate.usage / estimate.quota) * 100).toFixed(1);
-            
-            console.log(`💾 存储使用情况: ${usedMB}MB / ${quotaMB}MB (${usagePercent}%)`);
-            
-            // 仅记录存储使用情况，不自动清理数据
-            if (usagePercent > 95) {
-                console.warn('⚠️ 存储空间使用率非常高 (>95%)，建议用户手动管理数据');
-            } else if (usagePercent > 85) {
-                console.info('ℹ️ 存储空间使用率较高 (>85%)，但仍在安全范围内');
+        parsed = new URL(rawUrl);
+    } catch (error) {
+        throw new Error('URL 格式无效');
+    }
+    if (parsed.protocol !== 'https:' && !(parsed.protocol === 'http:' && isLocalMcpUrl(parsed))) {
+        throw new Error('只允许 HTTPS URL；开发测试可使用 localhost');
+    }
+    return parsed.toString();
+};
+
+const parseJsonLikeText = (text) => {
+    if (typeof text !== 'string') return null;
+    const trimmed = text.trim();
+    if (!trimmed) return null;
+    const fenced = trimmed.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
+    const candidate = fenced ? fenced[1].trim() : trimmed;
+    try {
+        return JSON.parse(candidate);
+    } catch (error) {
+        return null;
+    }
+};
+
+const stringifyMcpContent = (content) => {
+    if (content == null) return '';
+    if (typeof content === 'string') return content;
+    try {
+        return JSON.stringify(content);
+    } catch (error) {
+        return String(content);
+    }
+};
+
+const buildMcpHeaders = (token = '', sessionId = '') => {
+    const headers = {
+        'Content-Type': 'application/json',
+        'Accept': 'application/json, text/event-stream'
+    };
+    if (token) headers.Authorization = `Bearer ${token}`;
+    if (sessionId) headers['Mcp-Session-Id'] = sessionId;
+    return headers;
+};
+
+const parseMcpResponse = async (response) => {
+    const contentType = response.headers.get('content-type') || '';
+    const text = await response.text();
+    if (!text.trim()) return null;
+    if (contentType.includes('text/event-stream')) {
+        const payloads = [];
+        let current = [];
+        for (const line of text.split(/\r?\n/)) {
+            if (line.startsWith('data:')) {
+                current.push(line.slice(5).trimStart());
+            } else if (line.trim() === '' && current.length) {
+                payloads.push(current.join('\n'));
+                current = [];
             }
         }
-    } catch (error) {
-        console.warn('⚠️ 存储检查失败:', error);
+        if (current.length) payloads.push(current.join('\n'));
+        const jsonPayload = payloads.find(payload => payload && payload !== '[DONE]');
+        return jsonPayload ? parseJsonLikeText(jsonPayload) : null;
     }
+    return parseJsonLikeText(text);
+};
+
+const postMcpJsonRpc = async (service, method, params, options = {}) => {
+    const body = {
+        jsonrpc: '2.0',
+        method,
+        params
+    };
+    if (options.id !== undefined) body.id = options.id;
+
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), options.timeoutMs || MCP_DEFAULT_TIMEOUT_MS);
+    try {
+        const response = await fetch(service.url, {
+            method: 'POST',
+            headers: buildMcpHeaders(options.token, options.sessionId),
+            body: JSON.stringify(body),
+            signal: controller.signal
+        });
+        if (!response.ok) {
+            throw new Error(`HTTP ${response.status}`);
+        }
+        return {
+            data: await parseMcpResponse(response),
+            sessionId: response.headers.get('Mcp-Session-Id') || response.headers.get('mcp-session-id') || options.sessionId || ''
+        };
+    } catch (error) {
+        if (error?.name === 'AbortError') {
+            throw new Error('请求超时');
+        }
+        throw new Error(`CORS/网络错误：${error.message}`);
+    } finally {
+        clearTimeout(timeout);
+    }
+};
+
+const testMcpServiceConnection = async (service, tokenOverride) => {
+    const token = service.authType === 'bearer'
+        ? (tokenOverride !== undefined ? tokenOverride : await getMcpSecret(service.id))
+        : '';
+    if (service.authType === 'bearer' && !token) {
+        throw new Error('协议错误：Bearer Token 未填写');
+    }
+
+    const initialize = await postMcpJsonRpc(service, 'initialize', {
+        protocolVersion: MCP_PROTOCOL_VERSION,
+        capabilities: {},
+        clientInfo: { name: 'miaomiao-local-mcp-settings', version: '0.1.0' }
+    }, { id: 1, token, timeoutMs: MCP_DEFAULT_TIMEOUT_MS });
+    const initData = initialize.data;
+    if (!initData || initData.jsonrpc !== '2.0' || initData.id !== 1) {
+        throw new Error('协议错误：initialize 响应不是有效 JSON-RPC');
+    }
+    if (initData.error) {
+        throw new Error(`协议错误：initialize ${initData.error.message || '失败'}`);
+    }
+
+    await postMcpJsonRpc(service, 'notifications/initialized', {}, {
+        token,
+        sessionId: initialize.sessionId,
+        timeoutMs: MCP_DEFAULT_TIMEOUT_MS
+    });
+
+    const toolsResult = await postMcpJsonRpc(service, 'tools/list', {}, {
+        id: 2,
+        token,
+        sessionId: initialize.sessionId,
+        timeoutMs: MCP_DEFAULT_TIMEOUT_MS
+    });
+    const toolsData = toolsResult.data;
+    if (!toolsData || toolsData.jsonrpc !== '2.0' || toolsData.id !== 2) {
+        throw new Error('协议错误：tools/list 响应不是有效 JSON-RPC');
+    }
+    if (toolsData.error) {
+        throw new Error(`协议错误：tools/list ${toolsData.error.message || '失败'}`);
+    }
+    const tools = toolsData.result?.tools;
+    if (!Array.isArray(tools)) {
+        throw new Error('协议错误：tools/list 未返回 tools 数组');
+    }
+    return tools.map(tool => normalizeMcpTool(tool, service.id)).filter(tool => tool.name);
+};
+
+const getMcpSecrets = async () => {
+    const secrets = await dbStorage.get(MCP_SECRET_STORAGE_KEY, {});
+    return secrets && typeof secrets === 'object' ? secrets : {};
+};
+
+const setMcpSecret = async (serviceId, token) => {
+    const secrets = await getMcpSecrets();
+    if (token) {
+        secrets[serviceId] = token;
+    } else {
+        delete secrets[serviceId];
+    }
+    await dbStorage.set(MCP_SECRET_STORAGE_KEY, secrets);
+};
+
+const getMcpSecret = async (serviceId) => {
+    const secrets = await getMcpSecrets();
+    return secrets[serviceId] || '';
+};
+
+const getChatMcpPersonaIds = (chat) => getChatPersonaBindingIds(chat);
+
+const isServiceBoundToChat = (service, chat) => {
+    if (!service) return false;
+    if (service.bindingMode !== 'selected') return true;
+    const allowed = new Set((service.boundPersonaIds || []).filter(Boolean));
+    if (allowed.size === 0) return false;
+    return getChatMcpPersonaIds(chat).some(id => allowed.has(id));
+};
+
+const getBoundMcpServices = (chat, kind = 'ordinary') => {
+    const services = Array.isArray(appState.mcpServers) ? appState.mcpServers : [];
+    return services
+        .map(normalizeMcpConfig)
+        .filter(service => service.enabled && isServiceBoundToChat(service, chat))
+        .filter(service => kind === 'memory' ? !!service.memoryEnabled : !service.memoryEnabled);
+};
+
+const safeJsonResponseText = async (response) => {
+    const text = await response.text();
+    if (!text.trim()) return null;
+    const parsed = parseJsonLikeText(text);
+    return parsed || text;
+};
+
+const requestSecondaryChatCompletion = async (messages, options = {}) => {
+    const response = await callApi(messages, false, options);
+    const data = await response.json();
+    return data;
+};
+
+const buildMcpToolCatalog = (services) => services.flatMap(service => {
+    const normalized = normalizeMcpConfig(service);
+    return (normalized.tools || []).map(tool => ({
+        serviceId: normalized.id,
+        serviceName: normalized.name,
+        toolName: tool.name,
+        description: tool.description || '',
+        inputSchema: tool.inputSchema || null
+    }));
+});
+
+const buildMcpRouterPrompt = (chat, toolCatalog, stageContext = '') => {
+    const personaSummary = getChatMcpPersonaIds(chat).join(', ') || 'none';
+    return `
+你是 MCP 工具路由器。根据当前对话和工具 schema，自主决定是否继续调用工具，以及每轮调用哪些工具、参数如何填写、何时结束。
+
+目标：
+1. 根据当前对话和可用工具，连续安排若干次工具调用
+2. 每轮可以返回多个工具调用
+3. 每轮结果都会继续回传给你，直到你自己返回 final
+4. 只输出严格 JSON，不要输出多余文字
+5. 不要假设服务端支持原生 tool_choice；这里只是计划与调度层
+
+当前角色 ID:
+${personaSummary}
+
+可用工具目录:
+${JSON.stringify(toolCatalog, null, 2)}
+
+已知上下文:
+${stageContext || '(空)'}
+
+输出格式:
+{
+  "decision": "call_tools" | "final",
+  "calls": [
+    {
+      "serviceId": "string",
+      "toolName": "string",
+      "arguments": {}
+    }
+  ],
+  "finalSummary": "string",
+  "notes": "string"
 }
 
-// 等待数据库准备好的辅助函数
-const waitForDatabase = () => {
-    return new Promise((resolve) => {
-        if (db && db.isOpen()) {
-            resolve();
-        } else {
-            window.addEventListener('databaseReady', resolve, { once: true });
+规则:
+- 如果没有必要调用工具，decision 直接用 final
+- finalSummary 要简短，供主模型继续生成回答
+- 不要编造工具不存在的参数名
+`;
+};
+
+const extractMcpResponseText = (data) => {
+    if (!data || typeof data !== 'object') return '';
+    const choiceContent = data.choices?.[0]?.message?.content;
+    if (typeof choiceContent === 'string') return choiceContent.trim();
+    if (Array.isArray(choiceContent)) {
+        return choiceContent.map(part => {
+            if (typeof part === 'string') return part;
+            if (part && typeof part === 'object') return part.text || part.content || '';
+            return '';
+        }).join('').trim();
+    }
+    const fallback = data.output_text || data.text || data.result?.content || data.result || data.message?.content;
+    if (typeof fallback === 'string') return fallback.trim();
+    return stringifyMcpContent(fallback).trim();
+};
+
+const getMcpRuntimeEntry = (serviceId) => {
+    if (!appState.mcpRuntime || typeof appState.mcpRuntime !== 'object') return null;
+    return appState.mcpRuntime[serviceId] || null;
+};
+
+const setMcpRuntimeEntry = (serviceId, runtime) => {
+    if (!appState.mcpRuntime || typeof appState.mcpRuntime !== 'object') {
+        appState.mcpRuntime = {};
+    }
+    appState.mcpRuntime[serviceId] = runtime;
+    return appState.mcpRuntime[serviceId];
+};
+
+const resolveMcpToken = async (service, tokenOverride) => {
+    if (service.authType !== 'bearer') return '';
+    if (tokenOverride !== undefined) return tokenOverride || '';
+    return getMcpSecret(service.id);
+};
+
+const buildMcpToolContextText = (chat, recentHistory = [], extraLines = []) => {
+    const lines = [];
+    const personaIds = getChatMcpPersonaIds(chat);
+    lines.push(`聊天角色 ID: ${personaIds.join(', ') || 'none'}`);
+    if (recentHistory.length) {
+        lines.push('最近对话:');
+        recentHistory.slice(-12).forEach(message => {
+            const role = message.role === 'user' ? (chat?.personas?.my?.name || '用户') : (chat?.originalName || chat?.name || 'AI');
+            const content = typeof message.content === 'string' ? message.content : stringifyMcpContent(message.content);
+            lines.push(`${role}: ${content.slice(0, 500)}`);
+        });
+    }
+    extraLines.filter(Boolean).forEach(line => lines.push(line));
+    return lines.join('\n');
+};
+
+const ensureMcpServiceRuntime = async (service, tokenOverride) => {
+    const normalized = normalizeMcpConfig(service);
+    const cached = getMcpRuntimeEntry(normalized.id);
+    const token = await resolveMcpToken(normalized, tokenOverride);
+    if (cached?.sessionId && Array.isArray(cached.tools) && cached.tools.length > 0 && cached.token === token) {
+        return cached;
+    }
+
+    if (normalized.authType === 'bearer' && !token) {
+        throw new Error('协议错误：Bearer Token 未填写');
+    }
+
+    const initialize = await postMcpJsonRpc(normalized, 'initialize', {
+        protocolVersion: MCP_PROTOCOL_VERSION,
+        capabilities: {},
+        clientInfo: { name: 'miaomiao-local-mcp-settings', version: '0.1.0' }
+    }, { id: 1, token, timeoutMs: MCP_DEFAULT_TIMEOUT_MS });
+
+    const initData = initialize.data;
+    if (!initData || initData.jsonrpc !== '2.0' || initData.id !== 1) {
+        throw new Error('协议错误：initialize 响应不是有效 JSON-RPC');
+    }
+    if (initData.error) {
+        throw new Error(`协议错误：initialize ${initData.error.message || '失败'}`);
+    }
+
+    await postMcpJsonRpc(normalized, 'notifications/initialized', {}, {
+        token,
+        sessionId: initialize.sessionId,
+        timeoutMs: MCP_DEFAULT_TIMEOUT_MS
+    });
+
+    const toolsResult = await postMcpJsonRpc(normalized, 'tools/list', {}, {
+        id: 2,
+        token,
+        sessionId: initialize.sessionId,
+        timeoutMs: MCP_DEFAULT_TIMEOUT_MS
+    });
+    const toolsData = toolsResult.data;
+    if (!toolsData || toolsData.jsonrpc !== '2.0' || toolsData.id !== 2) {
+        throw new Error('协议错误：tools/list 响应不是有效 JSON-RPC');
+    }
+    if (toolsData.error) {
+        throw new Error(`协议错误：tools/list ${toolsData.error.message || '失败'}`);
+    }
+    const tools = Array.isArray(toolsData.result?.tools) ? toolsData.result.tools : [];
+    const normalizedTools = tools.map(tool => normalizeMcpTool(tool, normalized.id)).filter(tool => tool.name);
+    const persistedTools = normalized.tools || [];
+    const toolNamesChanged = normalizedTools.length !== persistedTools.length ||
+        normalizedTools.some((tool, index) => tool.name !== persistedTools[index]?.name || tool.key !== persistedTools[index]?.key);
+    if (toolNamesChanged) {
+        const target = (appState.mcpServers || []).find(item => item.id === normalized.id);
+        if (target) {
+            target.tools = normalizedTools;
+            await persistMcpConfigs();
         }
+    }
+
+    const runtime = {
+        sessionId: toolsResult.sessionId || initialize.sessionId || '',
+        token,
+        tools: normalizedTools,
+        connectedAt: Date.now()
+    };
+    setMcpRuntimeEntry(normalized.id, runtime);
+    return runtime;
+};
+
+const callMcpTool = async (service, toolName, argumentsObject = {}, options = {}) => {
+    const normalized = normalizeMcpConfig(service);
+    const runtime = await ensureMcpServiceRuntime(normalized, options.tokenOverride);
+    const response = await postMcpJsonRpc(normalized, 'tools/call', {
+        name: toolName,
+        arguments: argumentsObject && typeof argumentsObject === 'object' ? argumentsObject : {}
+    }, {
+        id: options.id,
+        token: runtime.token,
+        sessionId: runtime.sessionId,
+        timeoutMs: options.timeoutMs || MCP_DEFAULT_TIMEOUT_MS
+    });
+    const data = response.data;
+    if (!data || data.jsonrpc !== '2.0') {
+        throw new Error('协议错误：tools/call 响应不是有效 JSON-RPC');
+    }
+    if (data.error) {
+        throw new Error(data.error.message || 'tools/call 失败');
+    }
+    return {
+        data,
+        result: data.result ?? data,
+        text: stringifyMcpContent(data.result ?? data),
+        sessionId: response.sessionId
+    };
+};
+
+const requestSecondaryJsonPlan = async (messages, options = {}) => {
+    const response = await callApi(messages, false, options);
+    const data = await response.json();
+    const text = extractMcpResponseText(data);
+    const parsed = parseJsonLikeText(text);
+    return { data, text, parsed };
+};
+
+const buildMcpToolArgPrompt = (service, tool, contextText, purposeText) => `
+你是一个严格的 JSON 参数填充器。
+
+服务:
+${JSON.stringify({
+    id: service.id,
+    name: service.name
+}, null, 2)}
+
+工具:
+${JSON.stringify({
+    name: tool.name,
+    description: tool.description || '',
+    inputSchema: tool.inputSchema || null
+}, null, 2)}
+
+用途:
+${purposeText}
+
+上下文:
+${contextText}
+
+要求:
+1. 只输出严格 JSON object，不要输出解释、代码块或多余文字
+2. 只填写 schema 允许的字段
+3. 如果没有可用参数，输出 {}
+`;
+
+const fillMcpToolArguments = async (service, tool, contextText, purposeText) => {
+    const schema = tool?.inputSchema || null;
+    const hasSchema = schema && Object.keys(schema || {}).length > 0;
+    if (!hasSchema) {
+        return {};
+    }
+
+    const prompt = buildMcpToolArgPrompt(service, tool, contextText, purposeText);
+    const plan = await requestSecondaryJsonPlan([
+        { role: 'user', content: prompt }
+    ], { temperature: 0.1 });
+
+    if (plan.parsed && typeof plan.parsed === 'object' && !Array.isArray(plan.parsed)) {
+        return plan.parsed;
+    }
+
+    return {};
+};
+
+const buildMcpToolExecutionContext = (chat, history, extra = '') => {
+    const recentText = (Array.isArray(history) ? history : []).map(message => {
+        const role = message.role === 'user' ? (chat?.personas?.my?.name || '用户') : (chat?.originalName || chat?.name || 'AI');
+        const content = typeof message.content === 'string' ? message.content : stringifyMcpContent(message.content);
+        return `${role}: ${content}`;
+    }).join('\n');
+    return [extra, recentText].filter(Boolean).join('\n\n');
+};
+
+const buildMcpContextMessage = (label, payload) => ({
+    role: 'assistant',
+    content: `【${label}】\n${stringifyMcpContent(payload)}`
+});
+
+const runMcpToolRouter = async (chat, history) => {
+    const services = getBoundMcpServices(chat, 'ordinary');
+    if (!services.length) {
+        return { summary: '', results: [] };
+    }
+
+    const toolCatalog = buildMcpToolCatalog(services);
+    const serviceMap = new Map(services.map(service => [service.id, normalizeMcpConfig(service)]));
+    const routerMessages = [
+        { role: 'system', content: buildMcpRouterPrompt(chat, toolCatalog, buildMcpToolExecutionContext(chat, history, '当前阶段：普通 MCP 工具路由')) }
+    ];
+    const results = [];
+    let finalSummary = '';
+
+    while (true) {
+        const routerPlan = await requestSecondaryJsonPlan(routerMessages, { temperature: 0.1 });
+
+        if (routerPlan.text) {
+            routerMessages.push({ role: 'assistant', content: routerPlan.text });
+        }
+
+        const plan = routerPlan.parsed;
+        if (!plan || typeof plan !== 'object') {
+            routerMessages.push({
+                role: 'user',
+                content: JSON.stringify({
+                    type: 'mcp_router_feedback',
+                    status: 'invalid_plan',
+                    message: '路由器没有返回可解析的 JSON。请只输出符合格式的 JSON。'
+                }, null, 2)
+            });
+            continue;
+        }
+
+        if (plan.decision === 'final') {
+            finalSummary = typeof plan.finalSummary === 'string' ? plan.finalSummary.trim() : '';
+            break;
+        }
+
+        const calls = Array.isArray(plan.calls) ? plan.calls : [];
+        if (!calls.length) {
+            routerMessages.push({
+                role: 'user',
+                content: JSON.stringify({
+                    type: 'mcp_router_feedback',
+                    status: 'empty_calls',
+                    message: '没有可执行的工具调用。请补充 calls 或直接返回 final。',
+                    plan: {
+                        decision: plan.decision || '',
+                        notes: typeof plan.notes === 'string' ? plan.notes : ''
+                    }
+                }, null, 2)
+            });
+            continue;
+        }
+
+        const roundResults = [];
+        for (const call of calls) {
+            const service = serviceMap.get(call.serviceId);
+            if (!service) {
+                const item = {
+                    serviceId: call.serviceId || '',
+                    serviceName: '',
+                    toolName: call.toolName || '',
+                    arguments: call.arguments && typeof call.arguments === 'object' && !Array.isArray(call.arguments) ? call.arguments : {},
+                    ok: false,
+                    error: '服务不存在'
+                };
+                roundResults.push(item);
+                results.push(item);
+                continue;
+            }
+            const tool = (service.tools || []).find(item => item.name === call.toolName);
+            if (!tool) {
+                const item = {
+                    serviceId: service.id,
+                    serviceName: service.name,
+                    toolName: call.toolName || '',
+                    arguments: call.arguments && typeof call.arguments === 'object' && !Array.isArray(call.arguments) ? call.arguments : {},
+                    ok: false,
+                    error: '工具不存在'
+                };
+                roundResults.push(item);
+                results.push(item);
+                continue;
+            }
+
+            const callArgs = call.arguments && typeof call.arguments === 'object' && !Array.isArray(call.arguments)
+                ? call.arguments
+                : {};
+            try {
+                const result = await callMcpTool(service, tool.name, callArgs);
+                const item = {
+                    serviceId: service.id,
+                    serviceName: service.name,
+                    toolName: tool.name,
+                    arguments: callArgs,
+                    ok: true,
+                    result: result.result
+                };
+                roundResults.push(item);
+                results.push(item);
+            } catch (error) {
+                console.error(`[MCP路由] 调用失败: ${service.name}.${tool.name}`, error);
+                const item = {
+                    serviceId: service.id,
+                    serviceName: service.name,
+                    toolName: tool.name,
+                    arguments: callArgs,
+                    ok: false,
+                    error: error.message || String(error)
+                };
+                roundResults.push(item);
+                results.push(item);
+            }
+        }
+
+        routerMessages.push({
+            role: 'user',
+            content: JSON.stringify({
+                type: 'mcp_tool_results',
+                results: roundResults
+            }, null, 2)
+        });
+        finalSummary = typeof plan.finalSummary === 'string' ? plan.finalSummary.trim() : finalSummary;
+    }
+
+    return { summary: finalSummary, results };
+};
+
+const runMcpMemoryReadStage = async (chat, history) => {
+    const services = getBoundMcpServices(chat, 'memory');
+    if (!services.length) {
+        return { results: [] };
+    }
+
+    const results = [];
+    const contextText = buildMcpToolExecutionContext(chat, history, '当前阶段：记忆读取');
+
+    for (const service of services) {
+        if (!service.memoryReadTool) continue;
+        const tool = (service.tools || []).find(item => item.name === service.memoryReadTool);
+        if (!tool) {
+            console.error(`[MCP记忆读取] 工具不存在：${service.name}.${service.memoryReadTool}`);
+            continue;
+        }
+        try {
+            const args = await fillMcpToolArguments(service, tool, contextText, `记忆读取：${tool.name}`);
+            const result = await callMcpTool(service, tool.name, args);
+            results.push({
+                serviceId: service.id,
+                serviceName: service.name,
+                toolName: tool.name,
+                arguments: args,
+                ok: true,
+                result: result.result
+            });
+        } catch (error) {
+            console.error(`[MCP记忆读取] 失败：${service.name}.${service.memoryReadTool}`, error);
+            results.push({
+                serviceId: service.id,
+                serviceName: service.name,
+                toolName: service.memoryReadTool,
+                arguments: {},
+                ok: false,
+                error: error.message || String(error)
+            });
+        }
+    }
+
+    return { results };
+};
+
+const runMcpMemoryWriteStage = async (chat, summary, meta = {}) => {
+    const services = getBoundMcpServices(chat, 'memory');
+    if (!services.length || !summary) {
+        return { written: 0, skipped: 0 };
+    }
+
+    let written = 0;
+    let skipped = 0;
+    const writeHash = createSafeHash(`${chat?.id || appState.activeChatId || ''}|${summary}`);
+    const contextText = buildMcpToolExecutionContext(chat, [], [
+        `总结内容: ${summary}`,
+        `来源: ${meta.source || 'summary'}`,
+        `总结哈希: ${writeHash}`
+    ].join('\n'));
+
+    for (const service of services) {
+        if (!service.memoryWriteTool) continue;
+        const normalized = normalizeMcpConfig(service);
+        if (normalized.lastMemoryWriteHash === writeHash) {
+            skipped += 1;
+            continue;
+        }
+        const tool = (service.tools || []).find(item => item.name === service.memoryWriteTool);
+        if (!tool) {
+            console.error(`[MCP记忆写入] 工具不存在：${service.name}.${service.memoryWriteTool}`);
+            continue;
+        }
+        try {
+            const args = await fillMcpToolArguments(service, tool, contextText, `记忆写入：${tool.name}`);
+            await callMcpTool(service, tool.name, args);
+            normalized.lastMemoryWriteHash = writeHash;
+            const target = (appState.mcpServers || []).find(item => item.id === normalized.id);
+            if (target) {
+                target.lastMemoryWriteHash = writeHash;
+            }
+            written += 1;
+        } catch (error) {
+            console.error(`[MCP记忆写入] 失败：${service.name}.${service.memoryWriteTool}`, error);
+        }
+    }
+
+    if (written > 0) {
+        await persistMcpConfigs();
+    }
+
+    return { written, skipped };
+};
+
+const runMcpMemoryWriteAfterSummary = async (chat, summary, meta = {}) => {
+    try {
+        return await runMcpMemoryWriteStage(chat, summary, meta);
+    } catch (error) {
+        console.error('[MCP记忆写入] 失败:', error);
+        return { written: 0, skipped: 0 };
+    }
+};
+
+const updateMcpServiceCount = () => {
+    const text = document.getElementById('mcp-service-count-text');
+    if (!text) return;
+    const count = (appState.mcpServers || []).length;
+    const enabled = (appState.mcpServers || []).filter(service => service.enabled).length;
+    text.textContent = count ? `${enabled}/${count} 启用` : '未配置';
+};
+
+const setMcpStatus = (message, type = '') => {
+    const status = document.getElementById('mcp-test-status');
+    if (!status) return;
+    status.textContent = message || '';
+    status.className = `mcp-test-status ${message ? 'visible' : ''} ${type}`.trim();
+};
+
+let currentMcpEditingId = null;
+
+const renderMcpSettings = () => {
+    const list = document.getElementById('mcp-service-list');
+    const empty = document.getElementById('mcp-empty-state');
+    if (!list || !empty) return;
+    const services = appState.mcpServers || [];
+    list.innerHTML = '';
+    empty.style.display = services.length ? 'none' : 'block';
+    services.forEach(service => {
+        const card = document.createElement('div');
+        card.className = 'mcp-service-card';
+        const toolsHtml = service.tools.length ? `
+            <div class="mcp-tool-list">
+                ${service.tools.map(tool => `
+                    <div class="mcp-tool-row" data-service-id="${service.id}" data-tool-key="${tool.key}">
+                        <div>
+                            <div class="mcp-tool-name">${escapeHtml(tool.name)}</div>
+                            <div class="mcp-tool-description">${escapeHtml(tool.description || '无描述')}</div>
+                        </div>
+                        <select class="mcp-policy-select">
+                            <option value="auto" ${tool.policy === 'auto' ? 'selected' : ''}>auto</option>
+                            <option value="confirm" ${tool.policy === 'confirm' ? 'selected' : ''}>confirm</option>
+                            <option value="off" ${tool.policy === 'off' ? 'selected' : ''}>off</option>
+                        </select>
+                    </div>
+                `).join('')}
+            </div>` : '';
+        card.innerHTML = `
+            <div class="mcp-service-main">
+                <div>
+                    <div class="mcp-service-name">${escapeHtml(service.name)}</div>
+                    <div class="mcp-service-url">${escapeHtml(service.url)}</div>
+                    <div class="mcp-muted-note">${escapeHtml(getMcpServicePersonaBindingLabel(service))}</div>
+                </div>
+                <div class="toggle-switch ${service.enabled ? 'active' : ''}" data-action="toggle" data-service-id="${service.id}">
+                    <div class="toggle-knob"></div>
+                </div>
+            </div>
+            <div class="mcp-service-meta">
+                <span class="mcp-pill ${service.enabled ? 'enabled' : 'disabled'}">${service.enabled ? '已启用' : '已停用'}</span>
+                <span class="mcp-pill">${service.authType === 'bearer' ? (service.hasToken ? 'Bearer 已保存' : 'Bearer 未填') : '无认证'}</span>
+                <span class="mcp-pill">${service.tools.length} 个工具</span>
+                <span class="mcp-pill">${service.bindingMode === 'selected' ? '指定角色' : '全部角色'}</span>
+                <span class="mcp-pill">${service.memoryEnabled ? '记忆开启' : '记忆关闭'}</span>
+            </div>
+            ${toolsHtml}
+            <div class="mcp-card-actions">
+                <button class="action-btn-secondary" data-action="edit" data-service-id="${service.id}">编辑</button>
+                <button class="action-btn-secondary" data-action="delete" data-service-id="${service.id}">删除</button>
+            </div>
+        `;
+        list.appendChild(card);
+    });
+    updateMcpServiceCount();
+};
+
+const openMcpEditor = (serviceId = null) => {
+    currentMcpEditingId = serviceId;
+    const service = (appState.mcpServers || []).find(item => item.id === serviceId);
+    document.getElementById('mcp-editor-title').textContent = service ? '编辑 MCP 服务' : '新增 MCP 服务';
+    document.getElementById('mcp-name-input').value = service?.name || '';
+    document.getElementById('mcp-url-input').value = service?.url || '';
+    document.getElementById('mcp-auth-type-select').value = service?.authType || 'none';
+    document.getElementById('mcp-token-input').value = '';
+    document.getElementById('mcp-token-saved-hint').textContent = service?.hasToken ? '已保存 token；留空不会覆盖。' : '';
+    document.getElementById('mcp-enabled-toggle').classList.toggle('active', service?.enabled !== false);
+    document.getElementById('mcp-editor-panel').style.display = 'block';
+    document.getElementById('mcp-token-group').style.display = (service?.authType === 'bearer') ? 'block' : 'none';
+    document.getElementById('mcp-binding-mode-select').value = service?.bindingMode === 'selected' ? 'selected' : 'all';
+    document.getElementById('mcp-memory-toggle').classList.toggle('active', !!service?.memoryEnabled);
+    renderMcpEditorPersonaOptions(service);
+    renderMcpEditorToolSelects(service);
+    refreshMcpEditorVisibility();
+    setMcpStatus('');
+};
+
+const closeMcpEditor = () => {
+    currentMcpEditingId = null;
+    document.getElementById('mcp-token-input').value = '';
+    document.getElementById('mcp-editor-panel').style.display = 'none';
+    setMcpStatus('');
+};
+
+const collectMcpEditorService = () => {
+    const existing = (appState.mcpServers || []).find(item => item.id === currentMcpEditingId);
+    const name = document.getElementById('mcp-name-input').value.trim();
+    const url = validateMcpUrl(document.getElementById('mcp-url-input').value.trim());
+    const authType = document.getElementById('mcp-auth-type-select').value;
+    const bindingMode = document.getElementById('mcp-binding-mode-select').value === 'selected' ? 'selected' : 'all';
+    const boundPersonaIds = bindingMode === 'selected' ? collectMcpEditorPersonaIds() : [];
+    const memoryEnabled = document.getElementById('mcp-memory-toggle').classList.contains('active');
+    const memoryReadTool = document.getElementById('mcp-memory-read-tool-select').value || '';
+    const memoryWriteTool = document.getElementById('mcp-memory-write-tool-select').value || '';
+    if (!name) throw new Error('显示名称不能为空');
+    if (bindingMode === 'selected' && boundPersonaIds.length === 0) {
+        throw new Error('指定角色模式下至少要选择一个角色');
+    }
+    if (memoryEnabled && (!memoryReadTool || !memoryWriteTool)) {
+        throw new Error('启用记忆 MCP 时必须选择读取和写入工具');
+    }
+    return normalizeMcpConfig({
+        ...(existing || {}),
+        id: existing?.id || createMcpId(),
+        name,
+        url,
+        authType,
+        enabled: document.getElementById('mcp-enabled-toggle').classList.contains('active'),
+        hasToken: authType === 'bearer' ? !!existing?.hasToken : false,
+        bindingMode,
+        boundPersonaIds,
+        memoryEnabled,
+        memoryReadTool,
+        memoryWriteTool
     });
 };
 
-const dbStorage = {
-    async get(key, defaultValue) {
-        await waitForDatabase();
-        const item = await db.kvStore.get(key);
-        return item ? item.value : defaultValue;
-    },
-    async set(key, value) {
-        try {
-            await waitForDatabase();
-            if (!key || typeof key !== 'string') {
-                throw new Error(`无效的键: ${key}`);
-            }
-            
-            const safeValue = value === undefined ? null : value;
-            await db.kvStore.put({ key, value: safeValue });
-        } catch (e) {
-            console.error(`数据库保存失败 (key: ${key}):`, e);
-            console.error(`尝试保存的值:`, value);
-            alert(`数据库保存失败 (键: ${key})，可能是储存空间已满或发生未知错误: ${e.message}`);
-            throw e;
+const saveMcpFromEditor = async () => {
+    try {
+        const service = collectMcpEditorService();
+        const tokenValue = document.getElementById('mcp-token-input').value;
+        if (service.authType === 'bearer' && tokenValue) {
+            await setMcpSecret(service.id, tokenValue);
+            service.hasToken = true;
+        } else if (service.authType === 'none') {
+            await setMcpSecret(service.id, '');
+            service.hasToken = false;
         }
+        const index = (appState.mcpServers || []).findIndex(item => item.id === service.id);
+        if (index >= 0) {
+            appState.mcpServers[index] = service;
+        } else {
+            appState.mcpServers.push(service);
+        }
+        await persistMcpConfigs();
+        renderMcpSettings();
+        openMcpEditor(service.id);
+        setMcpStatus('已保存。', 'success');
+    } catch (error) {
+        setMcpStatus(error.message, 'error');
     }
 };
+
+const testMcpFromEditor = async () => {
+    const btn = document.getElementById('mcp-test-btn');
+    const oldText = btn.textContent;
+    try {
+        const service = collectMcpEditorService();
+        const tokenValue = document.getElementById('mcp-token-input').value;
+        btn.disabled = true;
+        btn.textContent = '测试中...';
+        setMcpStatus('正在执行 initialize / initialized / tools/list ...');
+        const tools = await testMcpServiceConnection(service, tokenValue || undefined);
+        const existingTools = new Map((service.tools || []).map(tool => [tool.name, tool.policy]));
+        service.tools = tools.map(tool => ({
+            key: `${service.id}:${tool.name}`,
+            name: tool.name,
+            description: tool.description,
+            policy: existingTools.get(tool.name) || 'confirm'
+        }));
+        service.lastTest = { ok: true, at: new Date().toISOString(), toolCount: service.tools.length };
+        if (service.authType === 'bearer' && tokenValue) {
+            await setMcpSecret(service.id, tokenValue);
+            service.hasToken = true;
+        }
+        const index = (appState.mcpServers || []).findIndex(item => item.id === service.id);
+        if (index >= 0) {
+            appState.mcpServers[index] = service;
+        } else {
+            appState.mcpServers.push(service);
+        }
+        await persistMcpConfigs();
+        renderMcpSettings();
+        openMcpEditor(service.id);
+        setMcpStatus(`连接成功：发现 ${service.tools.length} 个工具。`, 'success');
+    } catch (error) {
+        setMcpStatus(error.message, 'error');
+    } finally {
+        btn.disabled = false;
+        btn.textContent = oldText;
+    }
+};
+
+const bindMcpSettingsEvents = () => {
+    const screen = document.getElementById('mcp-settings-screen');
+    if (!screen || screen.dataset.eventsBound === 'true') return;
+    screen.dataset.eventsBound = 'true';
+
+    const setOnClick = (id, handler) => {
+        const el = document.getElementById(id);
+        if (el) el.onclick = handler;
+    };
+
+    setOnClick('settings-hub-mcp-btn', () => {
+        renderMcpSettings();
+        closeMcpEditor();
+        showScreen('mcp-settings-screen');
+    });
+    setOnClick('mcp-settings-back-btn', () => showScreen('settings-hub-screen'));
+    setOnClick('mcp-add-service-btn', () => openMcpEditor());
+    setOnClick('mcp-close-editor-btn', closeMcpEditor);
+    setOnClick('mcp-save-btn', saveMcpFromEditor);
+    setOnClick('mcp-test-btn', testMcpFromEditor);
+    setOnClick('mcp-enabled-toggle', () => {
+        const toggle = document.getElementById('mcp-enabled-toggle');
+        if (toggle) toggle.classList.toggle('active');
+    });
+    const bindingModeSelect = document.getElementById('mcp-binding-mode-select');
+    if (bindingModeSelect && bindingModeSelect.dataset.mcpBound !== 'true') {
+        bindingModeSelect.dataset.mcpBound = 'true';
+        bindingModeSelect.addEventListener('change', refreshMcpEditorVisibility);
+    }
+    setOnClick('mcp-memory-toggle', () => {
+        const toggle = document.getElementById('mcp-memory-toggle');
+        if (toggle) toggle.classList.toggle('active');
+        refreshMcpEditorVisibility();
+    });
+    const authSelect = document.getElementById('mcp-auth-type-select');
+    if (authSelect && authSelect.dataset.mcpBound !== 'true') {
+        authSelect.dataset.mcpBound = 'true';
+        authSelect.addEventListener('change', () => {
+            document.getElementById('mcp-token-group').style.display = authSelect.value === 'bearer' ? 'block' : 'none';
+        });
+    }
+    const list = document.getElementById('mcp-service-list');
+    if (list && list.dataset.mcpBound !== 'true') {
+        list.dataset.mcpBound = 'true';
+        list.addEventListener('click', async (event) => {
+            const target = event.target.closest('[data-action]');
+            if (!target) return;
+            const serviceId = target.dataset.serviceId;
+            const action = target.dataset.action;
+            const service = (appState.mcpServers || []).find(item => item.id === serviceId);
+            if (!service) return;
+            if (action === 'edit') {
+                openMcpEditor(serviceId);
+            } else if (action === 'toggle') {
+                service.enabled = !service.enabled;
+                await persistMcpConfigs();
+                renderMcpSettings();
+            } else if (action === 'delete' && confirm(`确定删除 MCP 服务“${service.name}”吗？`)) {
+                appState.mcpServers = appState.mcpServers.filter(item => item.id !== serviceId);
+                await setMcpSecret(serviceId, '');
+                await persistMcpConfigs();
+                renderMcpSettings();
+                if (currentMcpEditingId === serviceId) closeMcpEditor();
+            }
+        });
+        list.addEventListener('change', async (event) => {
+            if (!event.target.classList.contains('mcp-policy-select')) return;
+            const row = event.target.closest('.mcp-tool-row');
+            const service = (appState.mcpServers || []).find(item => item.id === row?.dataset.serviceId);
+            const tool = service?.tools.find(item => item.key === row.dataset.toolKey);
+            if (!tool) return;
+            tool.policy = event.target.value;
+            await persistMcpConfigs();
+        });
+    }
+};
+
+const initializeMcpSettingsEvents = () => {
+    bindMcpSettingsEvents();
+};
+
+if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', initializeMcpSettingsEvents, { once: true });
+} else {
+    initializeMcpSettingsEvents();
+}
+window.addEventListener('load', initializeMcpSettingsEvents, { once: true });
 
 // === 推送通知系统 ===
 // VAPID公钥配置 - 更新版本
@@ -1999,6 +3203,8 @@ const appState = {
     apiPresets: [], // API预设列表
     primaryApiConfig: { url: '', key: '', model: '', presetName: '' }, // 主API配置
     secondaryApiConfig: { url: '', key: '', model: '', presetName: '' }, // 副API配置
+    mcpServers: [],
+    mcpRuntime: {},
     personas: { ai: [], my: [] }, 
     chats: {},
     activeChatId: null,
@@ -6004,9 +7210,9 @@ const openCreateGroupChatScreen = () => {
             const item = document.createElement('div');
             item.className = 'persona-checkbox-item';
             item.innerHTML = `
-                <input type="checkbox" id="persona-checkbox-${persona.name}" value="${persona.name}">
+                <input type="checkbox" id="persona-checkbox-${persona.id}" value="${persona.id}">
                 <img src="${persona.avatar || DEFAULT_AVATAR}" class="list-item-avatar">
-                <label for="persona-checkbox-${persona.name}" class="list-item-name">${persona.name}</label>
+                <label for="persona-checkbox-${persona.id}" class="list-item-name">${persona.name}</label>
             `;
             container.appendChild(item);
         });
@@ -6341,12 +7547,12 @@ const openGroupPersonaSelectionModal = () => {
     modalTitle.textContent = '群聊成员管理';
     modalList.innerHTML = '';
     
-    // 获取当前群聊已选择的AI角色名称列表
-    const selectedNames = new Set(
-        Array.isArray(chat.personas?.ai) 
-            ? chat.personas.ai.map(p => p.name) 
+    // 获取当前群聊已选择的AI角色ID列表
+        const selectedIds = new Set(
+            Array.isArray(chat.personas?.ai)
+            ? chat.personas.ai.map(p => p.id)
             : []
-    );
+        );
     
     // 渲染所有可用的AI角色，带复选框
     if (!Array.isArray(appState.personas.ai) || appState.personas.ai.length === 0) {
@@ -6356,12 +7562,12 @@ const openGroupPersonaSelectionModal = () => {
             const item = document.createElement('div');
             item.className = 'persona-checkbox-item';
             
-            const isChecked = selectedNames.has(persona.name);
+            const isChecked = selectedIds.has(persona.id);
             
             item.innerHTML = `
-                <input type="checkbox" id="group-persona-checkbox-${persona.name}" value="${persona.name}" ${isChecked ? 'checked' : ''}>
+                <input type="checkbox" id="group-persona-checkbox-${persona.id}" value="${persona.id}" ${isChecked ? 'checked' : ''}>
                 <img src="${persona.avatar || DEFAULT_AVATAR}" class="list-item-avatar">
-                <label for="group-persona-checkbox-${persona.name}" class="list-item-name" style="cursor: pointer;">${persona.name}</label>
+                <label for="group-persona-checkbox-${persona.id}" class="list-item-name" style="cursor: pointer;">${persona.name}</label>
             `;
             modalList.appendChild(item);
         });
@@ -6384,10 +7590,9 @@ const saveGroupPersonaSelection = async () => {
     const checkboxes = document.querySelectorAll('#modal-persona-list input[type="checkbox"]:checked');
     
     checkboxes.forEach(checkbox => {
-        const personaName = checkbox.value;
-        const persona = appState.personas.ai.find(p => p.name === personaName);
+        const persona = appState.personas.ai.find(p => p.id === checkbox.value);
         if (persona) {
-            selectedPersonas.push(persona);
+            selectedPersonas.push(normalizePersonaRecord(persona, 'ai'));
         }
     });
     
@@ -6398,6 +7603,7 @@ const saveGroupPersonaSelection = async () => {
     
     // 更新群聊的AI角色列表
     chat.personas.ai = selectedPersonas;
+    normalizeChatPersonaBindings(chat);
     
     // 保存到数据库
     await dbStorage.set(KEYS.CHATS, appState.chats);
@@ -6417,35 +7623,36 @@ const saveGroupPersonaSelection = async () => {
     const closePersonaSelectionModal = () => document.getElementById('persona-selection-modal').classList.remove('active');
 
 const addContactAndCreateChat = async (persona) => {
+    const normalizedPersona = normalizePersonaRecord(persona, 'ai');
     // 1. 检查是否已经是联系人 (双重保险)
-    if (appState.contacts.some(c => c.name === persona.name)) {
+    if (appState.contacts.some(c => c.id === normalizedPersona.id || c.name === normalizedPersona.name)) {
         alert('该联系人已存在！');
         return;
     }
 
     // 2. 添加到联系人列表
-    appState.contacts.push(persona);
+    appState.contacts.push(normalizedPersona);
     await dbStorage.set(KEYS.CONTACTS, appState.contacts);
-    console.log(`联系人 ${persona.name} 已添加。`);
+    console.log(`联系人 ${normalizedPersona.name} 已添加。`);
 
     // 3. 自动创建与该联系人的1对1聊天
     const myPersona = appState.personas.my[0];
     if (!myPersona) {
         alert('错误：请先在“我的素材库”中创建您自己的角色！');
         // 回滚操作
-        appState.contacts = appState.contacts.filter(c => c.name !== persona.name);
+        appState.contacts = appState.contacts.filter(c => c.id !== normalizedPersona.id);
         await dbStorage.set(KEYS.CONTACTS, appState.contacts);
         return;
     }
 
     const newChatId = 'chat_' + Date.now();
     appState.chats[newChatId] = {
-        name: persona.name,
+        name: normalizedPersona.name,
     type: 'single',
     history: [],
     pinned: true, // <--- 新增这一行，给新聊天打上置顶标记
     personas: {
-            ai: persona, // AI方是这个新联系人
+            ai: normalizedPersona, // AI方是这个新联系人
             my: myPersona // “我”是默认的第一个人设
         },
         wallpaper: null,
@@ -6457,7 +7664,7 @@ const addContactAndCreateChat = async (persona) => {
         }
     };
     await dbStorage.set(KEYS.CHATS, appState.chats);
-    console.log(`与 ${persona.name} 的新聊天已创建。`);
+    console.log(`与 ${normalizedPersona.name} 的新聊天已创建。`);
 
     // 4. 打开新创建的聊天窗口
     openChat(newChatId);
@@ -6477,13 +7684,13 @@ const addContactAndCreateChat = async (persona) => {
     let targetElementId;
 
     if (context === 'group_my') {
-        appState.newChatTempPersonas.my = preset;
+        appState.newChatTempPersonas.my = normalizePersonaRecord(preset, 'my');
         targetElementId = 'group-my-persona-selection-text';
     } else if (context.includes('new')) {
-        appState.newChatTempPersonas[personaType] = preset;
+        appState.newChatTempPersonas[personaType] = normalizePersonaRecord(preset, personaType);
         targetElementId = `new-chat-${personaType}-selection-text`;
     } else {
-        appState.chats[appState.activeChatId].personas[personaType] = preset;
+        appState.chats[appState.activeChatId].personas[personaType] = normalizePersonaRecord(preset, personaType);
         targetElementId = `chat-${personaType}-selection-text`;
     }
 
@@ -6635,7 +7842,7 @@ const openChatSettings = () => {
     }
 
     document.getElementById('settings-profile-item').onclick = () => {
-        const personaIndex = appState.personas.ai.findIndex(p => p.name === chat.personas.ai.name);
+        const personaIndex = appState.personas.ai.findIndex(p => p.id === chat.personas?.ai?.id);
         if (personaIndex > -1) {
             openPersonaEditor('ai', personaIndex);
         } else {
@@ -9413,13 +10620,49 @@ ${shopItemsPrompt}
         }
         
         let recentHistory = chat.history;
+        const mcpContextMessages = [];
+        if (!isGroupChat) {
+            const baseMcpHistory = Array.isArray(recentHistory) ? recentHistory : [];
+            let mcpMemoryStage = { results: [] };
+            try {
+                mcpMemoryStage = await runMcpMemoryReadStage(chat, baseMcpHistory);
+                const successfulMemoryResults = Array.isArray(mcpMemoryStage?.results)
+                    ? mcpMemoryStage.results.filter(item => item && item.ok)
+                    : [];
+                if (successfulMemoryResults.length) {
+                    mcpContextMessages.push(buildMcpContextMessage('MCP 记忆读取结果', {
+                        stage: 'memory_read',
+                        results: successfulMemoryResults
+                    }));
+                }
+            } catch (error) {
+                console.error('[MCP记忆读取] 失败:', error);
+            }
+
+            try {
+                const mcpToolStage = await runMcpToolRouter(chat, baseMcpHistory);
+                const successfulToolResults = Array.isArray(mcpToolStage?.results)
+                    ? mcpToolStage.results.filter(item => item && item.ok)
+                    : [];
+                if (successfulToolResults.length) {
+                    mcpContextMessages.push(buildMcpContextMessage('MCP 普通工具结果', {
+                        stage: 'ordinary',
+                        finalSummary: mcpToolStage.summary || '',
+                        results: successfulToolResults
+                    }));
+                }
+            } catch (error) {
+                console.error('[MCP工具路由] 失败:', error);
+            }
+        }
+
         const memoryRounds = chat.memoryRounds || 0;
         if (memoryRounds > 0) {
             const messagesToKeep = memoryRounds * 2;
             recentHistory = chat.history.slice(-messagesToKeep);
         }
         const historyForAPI = processHistoryForAPI(recentHistory);
-        let messages = [{ role: 'system', content: systemPrompt }, ...historyForAPI];
+        let messages = [{ role: 'system', content: systemPrompt }, ...mcpContextMessages, ...historyForAPI];
         
         if (chat.timeAwareness) {
             const now = new Date();
@@ -12791,19 +14034,19 @@ async function updatePersonaAndCascadeChanges(index, type, newData) {
     // 1. 获取旧数据，特别是旧名字，用于查找匹配项。
     const originalPersona = { ...appState.personas[type][index] };
     const originalName = originalPersona.name;
+    const originalId = originalPersona.id;
+    const nextPersona = normalizePersonaRecord({ ...originalPersona, ...newData, id: originalPersona.id }, type);
 
     // 2. 更新核心人设库 (appState)
-    appState.personas[type][index] = { ...originalPersona, ...newData };
-    console.log(`人设库已更新: "${originalName}" -> "${newData.name}"`);
+    appState.personas[type][index] = nextPersona;
+    console.log(`人设库已更新: "${originalName}" -> "${nextPersona.name}"`);
 
     // 3. 同步更新【联系人】列表
     // (仅当修改的是 AI 人设时才需要)
     if (type === 'ai') {
-        const contactToUpdate = appState.contacts.find(c => c.name === originalName);
+        const contactToUpdate = appState.contacts.find(c => c.id === originalId || c.name === originalName);
         if (contactToUpdate) {
-            contactToUpdate.name = newData.name;
-            contactToUpdate.avatar = newData.avatar;
-            contactToUpdate.content = newData.content;
+            Object.assign(contactToUpdate, normalizePersonaRecord({ ...contactToUpdate, ...newData, id: contactToUpdate.id || originalId }, 'ai'));
             console.log(`联系人已同步: "${contactToUpdate.name}"`);
         }
     }
@@ -12816,24 +14059,22 @@ async function updatePersonaAndCascadeChanges(index, type, newData) {
         if (chat.type === 'group') {
             // --- 处理群聊 ---
             if (type === 'ai') {
-                const memberToUpdate = chat.personas.ai.find(m => m.name === originalName);
+                const memberToUpdate = chat.personas.ai.find(m => m.id === originalId || m.name === originalName);
                 if (memberToUpdate) {
-                    memberToUpdate.name = newData.name;
-                    memberToUpdate.avatar = newData.avatar;
-                    memberToUpdate.content = newData.content;
+                    Object.assign(memberToUpdate, normalizePersonaRecord({ ...memberToUpdate, ...newData, id: memberToUpdate.id || originalId }, 'ai'));
                     chatWasModified = true;
                 }
             }
         } else {
             // --- 处理单聊 ---
             const personaInChat = chat.personas[type];
-            if (personaInChat && personaInChat.name === originalName) {
+            if (personaInChat && (personaInChat.id === originalId || personaInChat.name === originalName)) {
                 // 更新这个聊天里的人设数据
-                chat.personas[type] = { ...personaInChat, ...newData };
+                chat.personas[type] = normalizePersonaRecord({ ...personaInChat, ...newData, id: personaInChat.id || originalId }, type);
                 
                 // 如果聊天备注名和人设旧名一样，就一起更新备注名
                 if (chat.name === originalName) {
-                    chat.name = newData.name;
+                    chat.name = nextPersona.name;
                 }
                 chatWasModified = true;
             }
@@ -13795,6 +15036,7 @@ document.getElementById('import-file-input').addEventListener('change', handleIm
         switchApiMode('primary'); // 默认显示主API
         showScreen('api-settings-screen');
     });
+    bindMcpSettingsEvents();
 
 safeSetOnClick('settings-hub-wallpaper-btn', () => {
     // 在显示页面前，先获取预览图片的元素
@@ -17297,10 +18539,12 @@ const init = async () => {
     appState.apiPresets = await dbStorage.get(KEYS.API_PRESETS, []);
     appState.primaryApiConfig = await dbStorage.get(KEYS.PRIMARY_API, { url: '', key: '', model: '', presetName: '' });
     appState.secondaryApiConfig = await dbStorage.get(KEYS.SECONDARY_API, { url: '', key: '', model: '', presetName: '' });
+    appState.mcpServers = sanitizeMcpConfigsForBackup(await dbStorage.get(KEYS.MCP_CONFIGS, []));
     appState.ethicalBypass = await dbStorage.get(KEYS.ETHICAL_BYPASS, { enabled: false, prompt: '' });
     appState.personas.ai = await dbStorage.get(KEYS.PERSONA_AI, []);
     appState.personas.my = await dbStorage.get(KEYS.PERSONA_MY, []);
     appState.chats = await dbStorage.get(KEYS.CHATS, {});
+    await normalizePersonaAndChatState();
     appState.heartVoiceAutoPopup = await dbStorage.get(KEYS.HEART_VOICE_AUTO_POPUP, true);
     
     // 数据迁移逻辑: 从旧的单选 promptId 转换到新的多选 promptIds 数组
@@ -17455,11 +18699,11 @@ const init = async () => {
     }
 
     if (appState.personas.ai.length === 0) {
-        appState.personas.ai.push({ name: '测试AI', content: '你是一个用于测试的ai。', avatar: DEFAULT_AVATAR })
+        appState.personas.ai.push(normalizePersonaRecord({ name: '测试AI', content: '你是一个用于测试的ai。', avatar: DEFAULT_AVATAR }, 'ai'))
         await dbStorage.set(KEYS.PERSONA_AI, appState.personas.ai);
     }
     if (appState.personas.my.length === 0) {
-        appState.personas.my.push({ name: '初始', content: '我是用户。', avatar: DEFAULT_AVATAR });
+        appState.personas.my.push(normalizePersonaRecord({ name: '初始', content: '我是用户。', avatar: DEFAULT_AVATAR }, 'my'));
         await dbStorage.set(KEYS.PERSONA_MY, appState.personas.my);
     }
     if(appState.homeWallpaper){ 
@@ -17530,6 +18774,7 @@ const init = async () => {
         ethicalPrompt.value = appState.ethicalBypass.prompt || '';
         ethicalPrompt.disabled = !appState.ethicalBypass.enabled;
     }
+    updateMcpServiceCount();
     
     // ... 其他代码 ...
     renderHomeScreenIcons();
@@ -17597,7 +18842,7 @@ const init = async () => {
 
         const selectedAIPersonas = [];
         document.querySelectorAll('#group-ai-persona-list-container input[type="checkbox"]:checked').forEach(checkbox => {
-            const persona = appState.personas.ai.find(p => p.name === checkbox.value);
+            const persona = appState.personas.ai.find(p => p.id === checkbox.value);
             if (persona) selectedAIPersonas.push(persona);
         });
 
@@ -17811,6 +19056,7 @@ const exportDataSimple = async () => {
     // 1. 定义需要备份的所有资料的 KEY
     const keysToExport = [
         KEYS.API, KEYS.API_PRESETS, KEYS.PRIMARY_API, KEYS.SECONDARY_API, KEYS.ETHICAL_BYPASS,
+        KEYS.MCP_CONFIGS,
         KEYS.CHATS, KEYS.CONTACTS, KEYS.PERSONA_AI, KEYS.PERSONA_MY,
         KEYS.HOME_WALLPAPER, KEYS.HOME_TIME_DISPLAY, KEYS.HOME_TIME_SIZE, KEYS.MOMENTS_DATA, KEYS.DECORATIVE_WIDGET_IMAGES,
         KEYS.STICKERS, KEYS.AI_STICKERS, KEYS.PROMPTS, KEYS.DARK_MODE, 
@@ -17947,6 +19193,10 @@ const exportDataSimple = async () => {
     }
 
     // 7. 将资料打包成 JSON 档案并提供下载
+    if (backupData[KEYS.MCP_CONFIGS]) {
+        backupData[KEYS.MCP_CONFIGS] = sanitizeMcpConfigsForBackup(backupData[KEYS.MCP_CONFIGS]);
+    }
+
     const jsonString = JSON.stringify(backupData, null, 2);
     const blob = new Blob([jsonString], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
@@ -18055,6 +19305,13 @@ const detectAndMigrateBackupData = (backupData) => {
             presetName: ''
         };
         console.log("- 初始化副API配置");
+    }
+
+    if (!migratedData[KEYS.MCP_CONFIGS]) {
+        migratedData[KEYS.MCP_CONFIGS] = [];
+        console.log("- 初始化MCP服务配置");
+    } else {
+        migratedData[KEYS.MCP_CONFIGS] = sanitizeMcpConfigsForBackup(migratedData[KEYS.MCP_CONFIGS]);
     }
     
     // 如果没有道德限制设置，初始化为默认值
@@ -18268,6 +19525,10 @@ const handleImportSimple = (event) => {
             if (backupData[KEYS.SECONDARY_API]) {
                 appState.secondaryApiConfig = backupData[KEYS.SECONDARY_API];
                 console.log(`- 已恢复副API配置`);
+            }
+            if (backupData[KEYS.MCP_CONFIGS]) {
+                appState.mcpServers = sanitizeMcpConfigsForBackup(backupData[KEYS.MCP_CONFIGS]);
+                console.log(`- 已恢复MCP服务配置: ${appState.mcpServers.length} 个`);
             }
             if (backupData[KEYS.ETHICAL_BYPASS]) {
                 appState.ethicalBypassEnabled = backupData[KEYS.ETHICAL_BYPASS].enabled || false;
@@ -33626,6 +34887,8 @@ async function checkAndTriggerAutoSummary(chatId) {
             // 保存到数据库
             await dbStorage.set(KEYS.CHATS, appState.chats);
 
+            await runMcpMemoryWriteAfterSummary(chat, summary, { source: 'auto_summary' });
+
             console.log(`[自动总结] 总结完成，已保存到长期记忆（共 ${newMessages.length} 条新消息）`);
 
     
@@ -34013,6 +35276,7 @@ async function handleManualSummary() {
 
             // 保存
             await dbStorage.set(KEYS.CHATS, appState.chats);
+            await runMcpMemoryWriteAfterSummary(chat, summary, { source: 'manual_summary' });
 
             // 刷新卡片显示
             renderSummaryCards(chatId);
@@ -34158,6 +35422,7 @@ async function refineSummaryContent() {
 
             // 保存
             await dbStorage.set(KEYS.CHATS, appState.chats);
+            await runMcpMemoryWriteAfterSummary(chat, refinedSummary, { source: 'refine_summary' });
 
             // 刷新卡片显示
             renderSummaryCards(chatId);
