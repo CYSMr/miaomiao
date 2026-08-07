@@ -14245,9 +14245,9 @@ const applyPlatformMode = (mode) => {
             documentElement.classList.add('user-platform-android');
             // 检测特殊设备并添加对应的CSS类
             detectSpecialDevice();
-            // 安卓同样启用 edge-to-edge，并由底部控件消费安全区，避免白条或遮挡
+            // 安卓模式移除viewport-fit=cover，避免顶部白色区域
             if (viewportMeta) {
-                viewportMeta.setAttribute('content', 'width=device-width, initial-scale=1.0, viewport-fit=cover, user-scalable=no');
+                viewportMeta.setAttribute('content', 'width=device-width, initial-scale=1.0, user-scalable=no');
             }
             console.log('已切换到安卓模式');
             break;
@@ -17760,7 +17760,7 @@ const openWidgetSettings = () => {
  * 计算并设置真实的视口高度，以解决移动端浏览器UI遮挡问题
  */
 const setRealViewportHeight = () => {
-    const realViewportHeight = window.visualViewport?.height || window.innerHeight;
+    const realViewportHeight = window.innerHeight;
     document.documentElement.style.setProperty('--real-vh', `${realViewportHeight}px`);
     // 设置真实视口高度
 };
@@ -17770,7 +17770,6 @@ setRealViewportHeight();
 
 // 在页面加载完成和窗口大小变化时再次执行，以应对各种动态变化
 window.addEventListener('resize', setRealViewportHeight);
-window.visualViewport?.addEventListener('resize', setRealViewportHeight);
 // (保留 load 事件作为双重保险)
 window.addEventListener('load', setRealViewportHeight);
 
