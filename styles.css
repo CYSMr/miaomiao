@@ -1154,8 +1154,8 @@ img{image-rendering:optimizeSpeed;image-rendering:-webkit-optimize-contrast;imag
     box-sizing: border-box !important;
 }
 
-.user-platform-android html {
-    height: 100% !important;
+html.user-platform-android {
+    height: var(--real-vh, 100dvh) !important;
     margin: 0 !important;
     padding: 0 !important;
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif !important;
@@ -1171,7 +1171,7 @@ img{image-rendering:optimizeSpeed;image-rendering:-webkit-optimize-contrast;imag
 }
 
 .user-platform-android body {
-    height: 100% !important;
+    height: var(--real-vh, 100dvh) !important;
     margin: 0 !important;
     padding: 0 !important;
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif !important;
@@ -1188,7 +1188,7 @@ img{image-rendering:optimizeSpeed;image-rendering:-webkit-optimize-contrast;imag
 
 .user-platform-android #phone-screen {
     width: 100% !important;
-    height: 100% !important;
+    height: var(--real-vh, 100dvh) !important;
     background-color: var(--phone-bg) !important;
     position: relative !important;
     overflow: hidden !important;
@@ -1245,6 +1245,8 @@ img{image-rendering:optimizeSpeed;image-rendering:-webkit-optimize-contrast;imag
     background-color: #ffffff !important;
     border-top: 1px solid var(--input-border) !important;
     padding: 0 !important;
+    padding-bottom: env(safe-area-inset-bottom) !important;
+    gap: 0 !important;
 }
 
 .user-platform-android .chat-input-row {
@@ -1262,7 +1264,7 @@ img{image-rendering:optimizeSpeed;image-rendering:-webkit-optimize-contrast;imag
 
 .user-platform-android #tab-bar {
     bottom: 0 !important;
-    padding-bottom: 0 !important;
+    padding-bottom: env(safe-area-inset-bottom) !important;
     margin-bottom: 0 !important;
     background-color: var(--phone-bg) !important;
 }
