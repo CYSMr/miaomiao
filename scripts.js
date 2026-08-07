@@ -10753,31 +10753,24 @@ const renderPlaylist = () => {
         
         // --- ▼▼▼ 以下是新增的長按邏輯 ▼▼▼ ---
         
-        let pressTimer = null;
-        let longPressTriggered = false;
+        let touchMoved = false;
 
-        // 當手指或滑鼠按下時啟動計時器
-        const startPress = (e) => {
-            // 只有在事件可以被取消时才阻止默认行为
-            if (e.cancelable) {
-                e.preventDefault(); // 防止觸控時的滾動等預設行為
-            }
-            longPressTriggered = false;
-            pressTimer = setTimeout(() => {
-                longPressTriggered = true;
-                // 計時器完成，觸發刪除函數
-                deleteSongFromPlaylist(index);
-            }, 700); // 長按 700 毫秒觸發
+        // 列表只允许点击行内删除按钮删除；触摸滚动不再被长按逻辑拦截。
+        const startPress = () => {
+            touchMoved = false;
         };
 
-        // 當手指或滑鼠抬起/移開時，清除計時器
-        const cancelPress = () => {
-            clearTimeout(pressTimer);
+        const cancelPress = () => {};
+
+        const handleTouchMove = () => {
+            // 一旦手指移动，就把这次手势交还给滚动容器，不触发播放或删除。
+            touchMoved = true;
+            cancelPress();
         };
         
         // 修改點擊行為：只有在長按未被觸發時才執行播放
         const handleClick = () => {
-            if (!longPressTriggered) {
+            if (!touchMoved) {
                 loadTrack(index);
                 closePlaylistSheet();
             }
@@ -10789,6 +10782,7 @@ const renderPlaylist = () => {
         li.addEventListener('mouseleave', cancelPress);
         
         li.addEventListener('touchstart', startPress, { passive: false });
+        li.addEventListener('touchmove', handleTouchMove, { passive: true });
         li.addEventListener('touchend', () => { cancelPress(); handleClick(); });
         li.addEventListener('touchcancel', cancelPress);
 
