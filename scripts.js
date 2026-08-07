@@ -10748,8 +10748,17 @@ const renderPlaylist = () => {
                 <div class="playlist-item-artist">${track.artist}</div>
             </div>
             <span class="playing-indicator">正在播放</span>
-            <button class="delete-track-btn" onclick="deleteSongFromPlaylist(${index}); event.stopPropagation();" title="删除歌曲">×</button>
+            <button class="delete-track-btn" title="删除歌曲">×</button>
         `;
+
+        const deleteButton = li.querySelector('.delete-track-btn');
+        if (deleteButton) {
+            // 删除按钮与歌曲行是两个独立动作，任何按下/点击事件都不能冒泡到行播放逻辑。
+            ['mousedown', 'pointerdown', 'touchstart', 'touchend', 'click'].forEach(eventName => {
+                deleteButton.addEventListener(eventName, event => event.stopPropagation(), { passive: eventName === 'touchstart' });
+            });
+            deleteButton.addEventListener('click', () => deleteSongFromPlaylist(index));
+        }
         
         // --- ▼▼▼ 以下是新增的長按邏輯 ▼▼▼ ---
         
