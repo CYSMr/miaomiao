@@ -15759,12 +15759,13 @@ const openMusicContactSelectionModal = () => {
     const modalList = document.getElementById('modal-music-contact-list');
     modalList.innerHTML = '';
 
-    const singleAiChats = Object.values(appState.chats).filter(chat => chat.type !== 'group');
+    const singleAiChats = Object.entries(appState.chats)
+        .filter(([, chat]) => chat.type !== 'group');
 
     if (singleAiChats.length === 0) {
         modalList.innerHTML = `<p style="text-align:center; color:#8a8a8a; padding: 20px;">没有可选择的联系人。</p>`;
     } else {
-        singleAiChats.forEach(chat => {
+        singleAiChats.forEach(([chatId, chat]) => {
             const item = document.createElement('div');
             item.className = 'list-item-content';
             item.style.cursor = 'pointer';
@@ -15776,7 +15777,7 @@ const openMusicContactSelectionModal = () => {
                 <span class="list-item-name">${aiPersona.name}</span>
             `;
 
-            item.onclick = () => handleMusicContactSelect(aiPersona);
+            item.onclick = () => handleMusicContactSelect(chatId);
             modalList.appendChild(item);
         });
     }
@@ -15796,73 +15797,26 @@ const closeMusicContactSelectionModal = () => {
 
 /**
  * 处理联系人选择后的逻辑
- * @param {object} contactPersona - 被选中的联系人角色对象
+ * @param {string} chatId - 被选中的具体聊天 ID
  */
-const handleMusicContactSelect = async (contactPersona) => {
-    appState.musicSessionPartner = contactPersona;
-    console.log(`已选择与 ${contactPersona.name} 一起听歌。`);
+const handleMusicContactSelect = async (chatId) => {
+    const chat = appState.chats[chatId];
+    if (!chat || chat.type === 'group') {
+        console.error('❌ [音乐会话] 选择的聊天不存在或不是单人聊天:', chatId);
+        return;
+    }
 
-    // 更新UI显示双人头像
-    renderMusicSessionAvatars();
-
-    // 关闭弹窗
     closeMusicContactSelectionModal();
 
-    // 【核心新增】开始音乐会话 - 找到对应的聊天并启动会话
-    // 1. 检查一个与该AI的1对1聊天是否已经存在（与 startChatFromContacts 使用相同逻辑）
-    let existingChatId = null;
-    for (const chatId in appState.chats) {
-        const chat = appState.chats[chatId];
-        // 查找条件：必须是单人聊天，且AI角色的名字要匹配
-        if (chat.type === 'single' && chat.personas.ai.name === contactPersona.name) {
-            existingChatId = chatId;
-            break;
-        }
+    // 切换对象时先完整保存并结束上一段会话，避免旧聊天继续占用状态。
+    if (appState.currentMusicSessionId && appState.musicSessionActiveChatId !== chatId) {
+        await endMusicSession();
     }
 
-    if (existingChatId) {
-        // 找到了现有的聊天，直接启动音乐会话
-        console.log(`✅ [音乐会话] 找到与 ${contactPersona.name} 的现有聊天: ${existingChatId}`);
-        await startMusicSession(existingChatId);
-    } else {
-        // 未找到聊天，创建新聊天
-        console.log(`🔍 [音乐会话] 未找到与 ${contactPersona.name} 的聊天，正在创建新聊天...`);
-        
-        const myPersona = appState.personas.my[0]; // 获取用户的默认角色
-        if (!myPersona) {
-            alert('错误：请先在"我的素材库"中创建您自己的角色！');
-            return;
-        }
-
-        const newChatId = 'chat_' + Date.now();
-        appState.chats[newChatId] = {
-            name: contactPersona.name,
-            type: 'single',
-            history: [],
-            pinned: true, // 新建的聊天自动置顶
-            personas: {
-                ai: contactPersona,
-                my: myPersona
-            },
-            wallpaper: null,
-            memoryRounds: 0,
-            isOfflineMode: false,
-            aiHeartVoice: '初次见面，有点紧张呢...',
-            bubbleCSS: {
-                online: '',  // 线上模式气泡CSS
-                offline: '' // 线下模式气泡CSS
-            }
-        };
-        
-        await dbStorage.set(KEYS.CHATS, appState.chats);
-        console.log(`✅ [音乐会话] 已为 ${contactPersona.name} 创建新聊天: ${newChatId}`);
-        
-        // 渲染聊天列表以显示新创建的聊天
-        renderChatList();
-        
-        // 启动音乐会话
-        await startMusicSession(newChatId);
-    }
+    appState.musicSessionPartner = chat.personas.ai;
+    console.log(`✅ [音乐会话] 已选择具体聊天: ${chatId}`);
+    await startMusicSession(chatId);
+    renderMusicSessionAvatars();
 };
 
 /**
