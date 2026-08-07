@@ -1234,7 +1234,7 @@ img{image-rendering:optimizeSpeed;image-rendering:-webkit-optimize-contrast;imag
 }
 
 .user-platform-android #home-screen {
-    padding-top: 90px !important;
+    padding-top: calc(40px + env(safe-area-inset-top)) !important;
 }
 
 .user-platform-android .chat-input-area {
