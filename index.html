@@ -1309,6 +1309,10 @@
                 <!-- 播放器动图设置区域 -->
                 <div class="search-section">
                     <h3 class="section-title">播放器动图</h3>
+                    <div class="search-input-row" style="margin-bottom: 10px;">
+                        <input type="file" id="player-media-file-input" accept="image/*,video/*,.gif,.mov,.mp4,.m4v,.webm,.heic,.heif" multiple style="display: none;" />
+                        <button id="select-player-media-file-btn" class="search-btn" style="width: 100%;">从本地选择图片、GIF 或视频</button>
+                    </div>
                     <div class="search-input-row">
                         <input type="text" id="player-gif-url-input" placeholder="输入播放器动图URL..." class="search-input" />
                         <button id="apply-player-gif-btn" class="search-btn">应用</button>
@@ -1317,7 +1321,7 @@
                         <div class="search-placeholder">
                             输入动图URL来设置音乐播放器的背景动图<br>
                             <span style="font-size: 12px; opacity: 0.7; margin-top: 5px; display: inline-block;">
-                                ✨ 支持格式：GIF、PNG、JPG、WebP等图片 | MP4、WebM、MKV、MOV等视频
+                                ✨ 支持图片、GIF、视频及 Live Photo 的 MOV 部分，也可以继续使用网络链接
                             </span>
                         </div>
                         <div id="current-gif-info" style="display: none; margin-top: 10px; padding: 10px; background: rgba(0, 122, 255, 0.1); border-radius: 8px; color: #007AFF; font-size: 14px;">

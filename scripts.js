@@ -22501,8 +22501,100 @@ function closeMusicSearchModal() {
 
 // === 播放器动图设置功能 ===
 
+const DEFAULT_PLAYER_MEDIA_URL = 'assets/default-player-rain.mp4';
+const PLAYER_MEDIA_DB_NAME = 'miaomiaoPlayerMedia';
+const PLAYER_MEDIA_STORE_NAME = 'media';
+let playerMediaObjectUrl = null;
+
+function openPlayerMediaDatabase() {
+    return new Promise((resolve, reject) => {
+        const request = indexedDB.open(PLAYER_MEDIA_DB_NAME, 1);
+        request.onupgradeneeded = () => {
+            if (!request.result.objectStoreNames.contains(PLAYER_MEDIA_STORE_NAME)) {
+                request.result.createObjectStore(PLAYER_MEDIA_STORE_NAME);
+            }
+        };
+        request.onsuccess = () => resolve(request.result);
+        request.onerror = () => reject(request.error);
+    });
+}
+
+async function saveLocalPlayerMedia(file, normalizedType) {
+    const database = await openPlayerMediaDatabase();
+    await new Promise((resolve, reject) => {
+        const transaction = database.transaction(PLAYER_MEDIA_STORE_NAME, 'readwrite');
+        transaction.objectStore(PLAYER_MEDIA_STORE_NAME).put({
+            blob: file,
+            name: file.name,
+            type: normalizedType,
+            savedAt: Date.now()
+        }, 'current');
+        transaction.oncomplete = resolve;
+        transaction.onerror = () => reject(transaction.error);
+    });
+    database.close();
+}
+
+async function getLocalPlayerMedia() {
+    const database = await openPlayerMediaDatabase();
+    const result = await new Promise((resolve, reject) => {
+        const request = database.transaction(PLAYER_MEDIA_STORE_NAME, 'readonly')
+            .objectStore(PLAYER_MEDIA_STORE_NAME).get('current');
+        request.onsuccess = () => resolve(request.result || null);
+        request.onerror = () => reject(request.error);
+    });
+    database.close();
+    return result;
+}
+
+async function deleteLocalPlayerMedia() {
+    const database = await openPlayerMediaDatabase();
+    await new Promise((resolve, reject) => {
+        const transaction = database.transaction(PLAYER_MEDIA_STORE_NAME, 'readwrite');
+        transaction.objectStore(PLAYER_MEDIA_STORE_NAME).delete('current');
+        transaction.oncomplete = resolve;
+        transaction.onerror = () => reject(transaction.error);
+    });
+    database.close();
+}
+
+function useLocalPlayerMedia(record) {
+    if (playerMediaObjectUrl) URL.revokeObjectURL(playerMediaObjectUrl);
+    playerMediaObjectUrl = URL.createObjectURL(record.blob);
+    const mediaType = record.type && record.type.startsWith('video/') ? 'video' : 'image';
+    updatePlayerGifStyle(playerMediaObjectUrl, mediaType);
+    updateGifInfoDisplay(`本地文件：${record.name || '自定义素材'}`);
+}
+
+async function handlePlayerMediaFileUpload(event) {
+    const selectedFiles = Array.from(event.target.files || []);
+    event.target.value = '';
+    const file = selectedFiles.find((item) =>
+        item.type.startsWith('video/') || /\.(mp4|mov|m4v|webm|ogg|ogv)$/i.test(item.name)
+    ) || selectedFiles[0];
+    if (!file) return;
+    const fileName = file.name.toLowerCase();
+    const isVideo = file.type.startsWith('video/') || /\.(mp4|mov|m4v|webm|ogg|ogv)$/.test(fileName);
+    const isImage = file.type.startsWith('image/') || /\.(gif|png|jpe?g|webp|heic|heif|apng)$/.test(fileName);
+    if (!isImage && !isVideo) {
+        alert('请选择图片、GIF 或视频文件');
+        return;
+    }
+
+    try {
+        const normalizedType = isVideo ? (file.type || 'video/mp4') : (file.type || 'image/jpeg');
+        await saveLocalPlayerMedia(file, normalizedType);
+        localStorage.removeItem('playerGifUrl');
+        useLocalPlayerMedia({ blob: file, name: file.name, type: normalizedType });
+        showPlayerGifMessage('✅ 本地素材已保存并应用');
+    } catch (error) {
+        console.error('[播放器动图] 本地文件保存失败:', error);
+        showPlayerGifMessage('❌ 保存失败，文件可能过大或浏览器空间不足');
+    }
+}
+
 // 应用播放器动图
-function applyPlayerGif() {
+async function applyPlayerGif() {
     const url = document.getElementById('player-gif-url-input').value.trim();
     if (!url) {
         alert('请输入动图URL');
@@ -22515,7 +22607,8 @@ function applyPlayerGif() {
     const fileType = getMediaFileType(url);
     console.log('[播放器动图] 检测到文件类型:', fileType);
     
-    // 保存动图URL到localStorage
+    // 链接与本地文件二选一，最后一次设置优先
+    await deleteLocalPlayerMedia().catch(() => {});
     localStorage.setItem('playerGifUrl', url);
     
     // 立即应用动图
@@ -22540,11 +22633,16 @@ function applyPlayerGif() {
 }
 
 // 清除播放器动图
-function clearPlayerGif() {
+async function clearPlayerGif() {
     console.log('[clearPlayerGif] 开始清除播放器动图');
     
     // 从localStorage中删除
     localStorage.removeItem('playerGifUrl');
+    await deleteLocalPlayerMedia().catch(() => {});
+    if (playerMediaObjectUrl) {
+        URL.revokeObjectURL(playerMediaObjectUrl);
+        playerMediaObjectUrl = null;
+    }
     
     // 移除视频背景元素（如果存在）
     const existingVideo = document.getElementById('player-video-bg');
@@ -22553,8 +22651,8 @@ function clearPlayerGif() {
         existingVideo.remove();
     }
     
-    // 恢复默认样式
-    updatePlayerGifStyle('');
+    // 恢复内置雨景视频
+    updatePlayerGifStyle(DEFAULT_PLAYER_MEDIA_URL, 'video');
     
     // 隐藏当前动图信息
     const infoDiv = document.getElementById('current-gif-info');
@@ -22566,20 +22664,33 @@ function clearPlayerGif() {
 }
 
 // 加载已保存的动图URL
-function loadPlayerGifUrl() {
+async function loadPlayerGifUrl() {
+    try {
+        const localMedia = await getLocalPlayerMedia();
+        if (localMedia && localMedia.blob) {
+            useLocalPlayerMedia(localMedia);
+            return;
+        }
+    } catch (error) {
+        console.warn('[播放器动图] 无法读取本地素材:', error);
+    }
+
     const savedUrl = localStorage.getItem('playerGifUrl');
     if (savedUrl) {
         updatePlayerGifStyle(savedUrl);
         updateGifInfoDisplay(savedUrl);
+        return;
     }
+
+    updatePlayerGifStyle(DEFAULT_PLAYER_MEDIA_URL, 'video');
 }
 
 // 更新播放器动图样式
-function updatePlayerGifStyle(url) {
+function updatePlayerGifStyle(url, explicitMediaType = '') {
     console.log('[updatePlayerGifStyle] 开始更新，URL:', url);
     const albumArtContainer = document.getElementById('player-album-art-container');
     if (albumArtContainer) {
-        albumArtContainer.classList.toggle('has-custom-player-media', Boolean(url && url.trim()));
+        albumArtContainer.classList.toggle('has-player-media', Boolean(url && url.trim()));
     }
     
     // 创建或更新CSS样式
@@ -22600,7 +22711,7 @@ function updatePlayerGifStyle(url) {
     
     if (url && url.trim() !== '') {
         // 检测文件类型
-        const fileType = getMediaFileType(url);
+        const fileType = explicitMediaType || getMediaFileType(url);
         console.log('[updatePlayerGifStyle] 文件类型:', fileType);
         
         if (fileType === 'video') {
@@ -23480,6 +23591,10 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     });
     document.getElementById('clear-player-gif-btn').addEventListener('click', clearPlayerGif);
+    document.getElementById('select-player-media-file-btn').addEventListener('click', () => {
+        document.getElementById('player-media-file-input').click();
+    });
+    document.getElementById('player-media-file-input').addEventListener('change', handlePlayerMediaFileUpload);
     
     // 音乐背景设置功能
     document.getElementById('apply-music-bg-btn').addEventListener('click', applyMusicBackground);
