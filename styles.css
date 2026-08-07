@@ -5044,7 +5044,67 @@ opacity: 0.5;
     --music-user-text: #1a252d;
     background-color: #0b141c !important;
     isolation: isolate;
+    box-sizing: border-box;
     padding: max(10px, env(safe-area-inset-top)) 12px max(20px, env(safe-area-inset-bottom));
+}
+
+/* 未设置播放器动图时使用的轻量内置动效，不依赖外链素材 */
+#player-album-art-container:not(.has-custom-player-media) {
+    background:
+        radial-gradient(circle at 25% 22%, rgba(255, 255, 255, 0.12) 0 1px, transparent 2px),
+        radial-gradient(circle at 72% 68%, rgba(255, 255, 255, 0.1) 0 1px, transparent 2px),
+        linear-gradient(145deg, rgba(71, 86, 112, 0.92), rgba(30, 23, 49, 0.96));
+    background-size: 38px 38px, 54px 54px, 100% 100%;
+}
+
+#player-album-art-container:not(.has-custom-player-media)::before {
+    content: '';
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: min(44%, 150px);
+    aspect-ratio: 1;
+    border-radius: 50%;
+    z-index: 1;
+    opacity: 0.82;
+    background:
+        radial-gradient(circle, var(--music-gold) 0 8%, #15191f 9% 15%, transparent 16%),
+        repeating-radial-gradient(circle, #15191f 0 3px, #242a32 4px 6px);
+    border: 1px solid rgba(255, 255, 255, 0.2);
+    box-shadow: 0 18px 34px rgba(0, 0, 0, 0.38), 0 0 32px rgba(255, 255, 255, 0.08);
+    animation: miaomiao-default-vinyl-spin 18s linear infinite;
+}
+
+#player-album-art-container:not(.has-custom-player-media)::after {
+    content: '';
+    position: absolute;
+    inset: -18%;
+    z-index: 0;
+    opacity: 0.48;
+    background:
+        radial-gradient(circle at 18% 28%, rgba(255, 255, 255, 0.85) 0 1px, transparent 2px),
+        radial-gradient(circle at 62% 18%, rgba(255, 255, 255, 0.7) 0 1px, transparent 2px),
+        radial-gradient(circle at 82% 66%, rgba(255, 255, 255, 0.65) 0 1px, transparent 2px),
+        radial-gradient(circle at 40% 78%, var(--music-gold) 0 1px, transparent 2px);
+    background-size: 86px 86px, 116px 116px, 132px 132px, 104px 104px;
+    animation: miaomiao-default-stardust-drift 14s ease-in-out infinite alternate;
+}
+
+@keyframes miaomiao-default-vinyl-spin {
+    from { transform: translate(-50%, -50%) rotate(0deg); }
+    to { transform: translate(-50%, -50%) rotate(360deg); }
+}
+
+@keyframes miaomiao-default-stardust-drift {
+    from { transform: translate3d(-2%, -1%, 0) rotate(-1deg); }
+    to { transform: translate3d(3%, 2%, 0) rotate(2deg); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    #player-album-art-container:not(.has-custom-player-media)::before,
+    #player-album-art-container:not(.has-custom-player-media)::after {
+        animation: none;
+    }
 }
 
 #music-player-screen[data-music-theme="silver"] {

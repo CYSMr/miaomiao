@@ -22577,6 +22577,10 @@ function loadPlayerGifUrl() {
 // 更新播放器动图样式
 function updatePlayerGifStyle(url) {
     console.log('[updatePlayerGifStyle] 开始更新，URL:', url);
+    const albumArtContainer = document.getElementById('player-album-art-container');
+    if (albumArtContainer) {
+        albumArtContainer.classList.toggle('has-custom-player-media', Boolean(url && url.trim()));
+    }
     
     // 创建或更新CSS样式
     let styleTag = document.getElementById('player-gif-style');
