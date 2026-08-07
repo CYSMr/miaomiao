@@ -14231,10 +14231,12 @@ const applyPlatformMode = (mode) => {
     
     // 获取viewport meta标签
     let viewportMeta = document.querySelector('meta[name="viewport"]');
+    let androidThemeMeta = document.getElementById('android-theme-color-meta');
     
     switch (mode) {
         case 'ios':
             documentElement.classList.add('user-platform-ios');
+            if (androidThemeMeta) androidThemeMeta.remove();
             // iOS模式使用viewport-fit=cover来支持刘海屏
             if (viewportMeta) {
                 viewportMeta.setAttribute('content', 'width=device-width, initial-scale=1.0, viewport-fit=cover, user-scalable=no');
@@ -14245,10 +14247,17 @@ const applyPlatformMode = (mode) => {
             documentElement.classList.add('user-platform-android');
             // 检测特殊设备并添加对应的CSS类
             detectSpecialDevice();
-            // 安卓模式移除viewport-fit=cover，避免顶部白色区域
+            // 安卓浏览器启用 edge-to-edge，让系统底部导航区跟页面对齐
             if (viewportMeta) {
-                viewportMeta.setAttribute('content', 'width=device-width, initial-scale=1.0, user-scalable=no');
+                viewportMeta.setAttribute('content', 'width=device-width, initial-scale=1.0, viewport-fit=cover, user-scalable=no');
             }
+            if (!androidThemeMeta) {
+                androidThemeMeta = document.createElement('meta');
+                androidThemeMeta.id = 'android-theme-color-meta';
+                androidThemeMeta.name = 'theme-color';
+                document.head.appendChild(androidThemeMeta);
+            }
+            androidThemeMeta.content = '#f1f1f1';
             console.log('已切换到安卓模式');
             break;
         default:

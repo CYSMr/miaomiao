@@ -1250,6 +1250,7 @@ img{image-rendering:optimizeSpeed;image-rendering:-webkit-optimize-contrast;imag
     background-color: #ffffff !important;
     border-top: 1px solid var(--input-border) !important;
     padding: 0 !important;
+    padding-bottom: env(safe-area-inset-bottom) !important;
 }
 
 .user-platform-android .chat-input-row {
@@ -1267,7 +1268,7 @@ img{image-rendering:optimizeSpeed;image-rendering:-webkit-optimize-contrast;imag
 
 .user-platform-android #tab-bar {
     bottom: 0 !important;
-    padding-bottom: 0 !important;
+    padding-bottom: env(safe-area-inset-bottom) !important;
     margin-bottom: 0 !important;
     background-color: var(--phone-bg) !important;
 }
