@@ -1452,7 +1452,7 @@ const completeMcpToolArguments = (schema, currentInput, argumentsObject = {}) =>
     return result;
 };
 
-const fillMcpToolArguments = async (service, tool, contextText, purposeText, currentInput = '') => {
+const fillMcpToolArguments = async (service, tool, contextText, purposeText, currentInput = '', options = {}) => {
     const schema = tool?.inputSchema || null;
     const hasSchema = schema && Object.keys(schema || {}).length > 0;
     if (!hasSchema) {
@@ -1462,7 +1462,7 @@ const fillMcpToolArguments = async (service, tool, contextText, purposeText, cur
     const prompt = buildMcpToolArgPrompt(service, tool, contextText, purposeText);
     const plan = await requestSecondaryJsonPlan([
         { role: 'user', content: prompt }
-    ], { temperature: 0.1 });
+    ], { temperature: 0.1, signal: options.signal });
 
     const parsedArguments = plan.parsed && typeof plan.parsed === 'object' && !Array.isArray(plan.parsed)
         ? plan.parsed
@@ -2053,12 +2053,14 @@ const runMcpMemoryReadStage = async (chat, history) => {
     const results = [];
     const contextText = buildMcpToolExecutionContext(chat, history, '当前阶段：记忆读取');
     const currentUserInput = getLatestMcpUserInput(history);
+    const trace = ensureMcpTraceCard(chat, appState.currentMcpTraceContext?.userMessageTimestamp || null);
+    const cancellationSignal = trace?.cancelController?.signal;
     updateMcpTraceHeadline('正在读取记忆...');
 
     for (const service of services) {
+        if (cancellationSignal?.aborted) break;
         if (!service.memoryReadTool) continue;
         let attemptedArguments = {};
-        ensureMcpTraceCard(chat, appState.currentMcpTraceContext?.userMessageTimestamp || null);
         const configuredTool = (service.tools || []).find(item => item.name === service.memoryReadTool);
         if (!configuredTool || !isMcpToolOpen(configuredTool)) {
             console.error(`[MCP记忆读取] 工具不存在：${service.name}.${service.memoryReadTool}`);
@@ -2066,12 +2068,19 @@ const runMcpMemoryReadStage = async (chat, history) => {
             continue;
         }
         try {
-            const runtime = await ensureMcpServiceRuntime(service);
+            const runtime = await ensureMcpServiceRuntime(service, undefined, { signal: cancellationSignal });
             const tool = (runtime.tools || []).find(item => item.name === service.memoryReadTool) || configuredTool;
-            const args = await fillMcpToolArguments(service, tool, contextText, `记忆读取：${tool.name}`, currentUserInput);
+            const args = await fillMcpToolArguments(
+                service,
+                tool,
+                contextText,
+                `记忆读取：${tool.name}`,
+                currentUserInput,
+                { signal: cancellationSignal }
+            );
             attemptedArguments = args;
             updateMcpTraceHeadline(`正在读取记忆：${service.name}.${tool.name}`);
-            const result = await callMcpTool(service, tool.name, args);
+            const result = await callMcpTool(service, tool.name, args, { signal: cancellationSignal });
             appendMcpTraceEntry('memory_read', service.name, tool.name, args, result.data ?? result.result, true);
             results.push({
                 serviceId: service.id,
@@ -2082,6 +2091,7 @@ const runMcpMemoryReadStage = async (chat, history) => {
                 result: result.result
             });
         } catch (error) {
+            if (cancellationSignal?.aborted) break;
             console.error(`[MCP记忆读取] 失败：${service.name}.${service.memoryReadTool}`, error);
             appendMcpTraceEntry('memory_read', service.name, service.memoryReadTool || '', attemptedArguments, error, false);
             results.push({
@@ -2095,7 +2105,7 @@ const runMcpMemoryReadStage = async (chat, history) => {
         }
     }
 
-    return { results };
+    return { results, stopped: !!cancellationSignal?.aborted };
 };
 
 const runMcpMemoryWriteStage = async (chat, summary, meta = {}) => {
@@ -11396,12 +11406,14 @@ ${shopItemsPrompt}
             const baseMcpHistory = [...(Array.isArray(recentHistory) ? recentHistory : [])];
             try {
                 const mcpMemoryStage = await runMcpMemoryReadStage(chat, baseMcpHistory);
+                mcpStageStopped = !!mcpMemoryStage?.stopped;
                 const successfulMemoryResults = Array.isArray(mcpMemoryStage?.results)
                     ? mcpMemoryStage.results.filter(item => item && item.ok)
                     : [];
-                if (successfulMemoryResults.length) {
+                if (successfulMemoryResults.length || mcpStageStopped) {
                     mcpContextMessages.push(buildMcpContextMessage('MCP 记忆读取结果', {
                         stage: 'memory_read',
+                        stopped: mcpStageStopped,
                         results: successfulMemoryResults
                     }));
                 }
@@ -11410,22 +11422,24 @@ ${shopItemsPrompt}
                 mcpStageFailed = true;
             }
 
-            try {
-                const mcpToolStage = await runMcpToolRouter(chat, baseMcpHistory);
-                mcpStageStopped = !!mcpToolStage?.stopped;
-                const successfulToolResults = Array.isArray(mcpToolStage?.results)
-                    ? mcpToolStage.results.filter(item => item && item.ok)
-                    : [];
-                if (successfulToolResults.length || mcpStageStopped) {
-                    mcpContextMessages.push(buildMcpContextMessage('MCP 普通工具调用结果', {
-                        stage: 'ordinary',
-                        stopped: mcpStageStopped,
-                        results: successfulToolResults
-                    }));
+            if (!mcpStageStopped) {
+                try {
+                    const mcpToolStage = await runMcpToolRouter(chat, baseMcpHistory);
+                    mcpStageStopped = !!mcpToolStage?.stopped;
+                    const successfulToolResults = Array.isArray(mcpToolStage?.results)
+                        ? mcpToolStage.results.filter(item => item && item.ok)
+                        : [];
+                    if (successfulToolResults.length || mcpStageStopped) {
+                        mcpContextMessages.push(buildMcpContextMessage('MCP 普通工具调用结果', {
+                            stage: 'ordinary',
+                            stopped: mcpStageStopped,
+                            results: successfulToolResults
+                        }));
+                    }
+                } catch (error) {
+                    console.error('[MCP工具路由] 失败:', error);
+                    mcpStageFailed = true;
                 }
-            } catch (error) {
-                console.error('[MCP工具路由] 失败:', error);
-                mcpStageFailed = true;
             }
 
             currentMcpTraceId = getActiveMcpTrace()?.traceId || '';
