@@ -911,11 +911,21 @@ const buildMcpHeaders = (token = '', sessionId = '') => {
     return headers;
 };
 
-const parseMcpResponse = async (response) => {
+const selectMcpJsonRpcPayload = (payloads, expectedId) => {
+    const candidates = payloads.flatMap(payload => Array.isArray(payload) ? payload : [payload]).filter(Boolean);
+    if (expectedId !== undefined) {
+        const matched = candidates.find(payload => payload && typeof payload === 'object' &&
+            payload.jsonrpc === '2.0' && String(payload.id) === String(expectedId));
+        if (matched) return matched;
+    }
+    return candidates.find(payload => payload && typeof payload === 'object' && payload.jsonrpc === '2.0') || candidates[0] || null;
+};
+
+const parseMcpResponse = async (response, expectedId) => {
     const contentType = response.headers.get('content-type') || '';
     const text = await response.text();
     if (!text.trim()) return null;
-    if (contentType.includes('text/event-stream')) {
+    if (contentType.includes('text/event-stream') || /^\s*(?:event:|data:)/m.test(text)) {
         const payloads = [];
         let current = [];
         for (const line of text.split(/\r?\n/)) {
@@ -927,10 +937,14 @@ const parseMcpResponse = async (response) => {
             }
         }
         if (current.length) payloads.push(current.join('\n'));
-        const jsonPayload = payloads.find(payload => payload && payload !== '[DONE]');
-        return jsonPayload ? parseJsonLikeText(jsonPayload) : null;
+        const parsedPayloads = payloads
+            .filter(payload => payload && payload !== '[DONE]')
+            .map(parseJsonLikeText)
+            .filter(Boolean);
+        return selectMcpJsonRpcPayload(parsedPayloads, expectedId);
     }
-    return parseJsonLikeText(text);
+    const parsed = parseJsonLikeText(text);
+    return selectMcpJsonRpcPayload(parsed ? [parsed] : [], expectedId);
 };
 
 const postMcpJsonRpc = async (service, method, params, options = {}) => {
@@ -954,7 +968,7 @@ const postMcpJsonRpc = async (service, method, params, options = {}) => {
             throw new Error(`HTTP ${response.status}`);
         }
         return {
-            data: await parseMcpResponse(response),
+            data: await parseMcpResponse(response, body.id),
             sessionId: response.headers.get('Mcp-Session-Id') || response.headers.get('mcp-session-id') || options.sessionId || ''
         };
     } catch (error) {
@@ -1250,6 +1264,7 @@ const ensureMcpServiceRuntime = async (service, tokenOverride) => {
         sessionId: toolsResult.sessionId || initialize.sessionId || '',
         token,
         tools: normalizedTools,
+        nextRequestId: 3,
         connectedAt: Date.now()
     };
     setMcpRuntimeEntry(normalized.id, runtime);
@@ -1266,17 +1281,19 @@ const callMcpTool = async (service, toolName, argumentsObject = {}, options = {}
         throw new Error('工具未开放给 AI');
     }
     const runtime = await ensureMcpServiceRuntime(normalized, options.tokenOverride);
+    const requestId = options.id ?? (Number.isFinite(runtime.nextRequestId) ? runtime.nextRequestId : 3);
+    runtime.nextRequestId = Number(requestId) + 1;
     const response = await postMcpJsonRpc(normalized, 'tools/call', {
         name: toolName,
         arguments: argumentsObject && typeof argumentsObject === 'object' ? argumentsObject : {}
     }, {
-        id: options.id,
+        id: requestId,
         token: runtime.token,
         sessionId: runtime.sessionId,
         timeoutMs: options.timeoutMs || MCP_DEFAULT_TIMEOUT_MS
     });
     const data = response.data;
-    if (!data || data.jsonrpc !== '2.0') {
+    if (!data || data.jsonrpc !== '2.0' || String(data.id) !== String(requestId)) {
         throw new Error('协议错误：tools/call 响应不是有效 JSON-RPC');
     }
     if (data.error) {
