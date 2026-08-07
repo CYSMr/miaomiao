@@ -1948,6 +1948,11 @@ img{image-rendering:optimizeSpeed;image-rendering:-webkit-optimize-contrast;imag
     }
 }
 
+/* iPhone 上旧版统一下移规则会让顶部操作区显得过低，只校正这一排按钮 */
+.user-platform-ios #music-player-screen .music-top-nav {
+    transform: translateY(8px) !important;
+}
+
 .float-back-btn {
     background: rgba(255, 255, 255, 0.2);
     backdrop-filter: blur(15px);
