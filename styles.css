@@ -1188,7 +1188,7 @@ img{image-rendering:optimizeSpeed;image-rendering:-webkit-optimize-contrast;imag
 
 .user-platform-android #phone-screen {
     width: 100% !important;
-    height: 100% !important;
+    height: var(--real-vh, 100dvh) !important;
     background-color: var(--phone-bg) !important;
     position: relative !important;
     overflow: hidden !important;
@@ -1204,7 +1204,7 @@ img{image-rendering:optimizeSpeed;image-rendering:-webkit-optimize-contrast;imag
     top: 0 !important;
     left: 0 !important;
     width: 100% !important;
-    height: 100% !important;
+    height: var(--real-vh, 100dvh) !important;
     overflow: hidden !important;
     margin: 0 !important;
     padding: 0 !important;
@@ -1234,7 +1234,12 @@ img{image-rendering:optimizeSpeed;image-rendering:-webkit-optimize-contrast;imag
 }
 
 .user-platform-android #home-screen {
-    padding-top: calc(40px + env(safe-area-inset-top)) !important;
+    padding-top: calc(20px + env(safe-area-inset-top)) !important;
+    padding-bottom: 0 !important;
+}
+
+.user-platform-android #new-decorative-widget {
+    margin-bottom: 10px !important;
 }
 
 .user-platform-android .chat-input-area {

@@ -17760,7 +17760,7 @@ const openWidgetSettings = () => {
  * 计算并设置真实的视口高度，以解决移动端浏览器UI遮挡问题
  */
 const setRealViewportHeight = () => {
-    const realViewportHeight = window.innerHeight;
+    const realViewportHeight = window.visualViewport?.height || window.innerHeight;
     document.documentElement.style.setProperty('--real-vh', `${realViewportHeight}px`);
     // 设置真实视口高度
 };
@@ -17770,6 +17770,7 @@ setRealViewportHeight();
 
 // 在页面加载完成和窗口大小变化时再次执行，以应对各种动态变化
 window.addEventListener('resize', setRealViewportHeight);
+window.visualViewport?.addEventListener('resize', setRealViewportHeight);
 // (保留 load 事件作为双重保险)
 window.addEventListener('load', setRealViewportHeight);
 
