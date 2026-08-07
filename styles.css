@@ -3597,6 +3597,9 @@ img{image-rendering:optimizeSpeed;image-rendering:-webkit-optimize-contrast;imag
     box-shadow: 0 6px 18px rgba(0, 0, 0, 0.06);
     overflow: hidden;
 }
+.mcp-trace-card.mcp-trace-ui-hidden {
+    display: none !important;
+}
 .mcp-trace-topbar {
     display: flex;
     align-items: stretch;

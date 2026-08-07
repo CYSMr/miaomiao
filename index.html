@@ -860,6 +860,17 @@
                 <button id="mcp-add-service-btn" class="settings-btn">新增</button>
             </header>
             <div class="settings-page-content mcp-settings-content">
+                <div class="settings-section mcp-trace-display-setting">
+                    <div class="settings-item mcp-enable-row">
+                        <div>
+                            <span class="item-label">显示 MCP 调用轨迹</span>
+                            <div class="mcp-muted-note">关闭后只隐藏聊天中的轨迹卡，不影响工具调用和上下文。</div>
+                        </div>
+                        <div id="mcp-trace-visibility-toggle" class="toggle-switch active">
+                            <div class="toggle-knob"></div>
+                        </div>
+                    </div>
+                </div>
                 <div id="mcp-service-list" class="mcp-service-list"></div>
                 <div id="mcp-empty-state" class="mcp-empty-state">
                     <div class="mcp-empty-title">暂无 MCP 服务</div>

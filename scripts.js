@@ -449,6 +449,7 @@ const KEYS = {
     TOP_BAR_TEXTURE: 'top_bar_texture_v1',
     BOTTOM_BAR_TEXTURE: 'bottom_bar_texture_v1',
     MCP_CONFIGS: 'mcp_configs_v1',
+    MCP_TRACE_VISIBLE: 'mcp_trace_visible_v1',
     DIARY_ENTRIES: 'diary_entries_v1',
     FORUM_DATA: 'forum_data',
     WORK_BACKGROUND: 'work_background_v1'
@@ -1619,6 +1620,18 @@ const getMcpTracePayload = (message) => {
     return null;
 };
 
+const isMcpTraceVisible = () => appState.mcpTraceVisible !== false;
+
+const applyMcpTraceVisibility = () => {
+    document.querySelectorAll('.mcp-trace-card').forEach(card => {
+        card.classList.toggle('mcp-trace-ui-hidden', !isMcpTraceVisible());
+    });
+};
+
+const shouldRenderChatHistoryMessage = (message) => {
+    return !message?.hidden || !!getMcpTracePayload(message);
+};
+
 const renderMcpTraceEntries = (runtime) => {
     if (!runtime?.entriesData || !runtime.entries) return;
     runtime.entries.innerHTML = '';
@@ -1673,6 +1686,7 @@ const createMcpTraceCard = (chat, userMessageTimestamp, historyEntry = null) => 
 
     const card = document.createElement('div');
     card.className = 'mcp-trace-card mcp-trace-expanded mcp-trace-running';
+    card.classList.toggle('mcp-trace-ui-hidden', !isMcpTraceVisible());
     card.dataset.chatId = traceContent.chatId || chat?.id || '';
     card.dataset.userTimestamp = traceContent.userMessageTimestamp ? String(traceContent.userMessageTimestamp) : '';
     card.dataset.traceId = traceContent.traceId || traceEntry.traceId || '';
@@ -2202,6 +2216,7 @@ const renderMcpSettings = () => {
     const list = document.getElementById('mcp-service-list');
     const empty = document.getElementById('mcp-empty-state');
     if (!list || !empty) return;
+    document.getElementById('mcp-trace-visibility-toggle')?.classList.toggle('active', isMcpTraceVisible());
     const services = appState.mcpServers || [];
     list.innerHTML = '';
     empty.style.display = services.length ? 'none' : 'block';
@@ -2405,6 +2420,12 @@ const bindMcpSettingsEvents = () => {
     setOnClick('mcp-close-editor-btn', closeMcpEditor);
     setOnClick('mcp-save-btn', saveMcpFromEditor);
     setOnClick('mcp-test-btn', testMcpFromEditor);
+    setOnClick('mcp-trace-visibility-toggle', async () => {
+        appState.mcpTraceVisible = !isMcpTraceVisible();
+        document.getElementById('mcp-trace-visibility-toggle')?.classList.toggle('active', isMcpTraceVisible());
+        applyMcpTraceVisibility();
+        await dbStorage.set(KEYS.MCP_TRACE_VISIBLE, appState.mcpTraceVisible);
+    });
     setOnClick('mcp-enabled-toggle', () => {
         const toggle = document.getElementById('mcp-enabled-toggle');
         if (toggle) toggle.classList.toggle('active');
@@ -3946,6 +3967,7 @@ const appState = {
     secondaryApiConfig: { url: '', key: '', model: '', presetName: '' }, // 副API配置
     mcpServers: [],
     mcpRuntime: {},
+    mcpTraceVisible: true,
     currentMcpTrace: null,
     currentMcpTraceContext: null,
     personas: { ai: [], my: [] }, 
@@ -5380,6 +5402,12 @@ const prependMessage = (message, container, messageIndex = null) => {
 
     // --- 这部分逻辑和 appendMessage 完全一样 ---
     const { role, content: contentData, timestamp, author: authorName, replyTo, edited } = message;
+    const tracePayload = getMcpTracePayload(message);
+    if (tracePayload) {
+        const runtime = createMcpTraceCard(chat, tracePayload.userMessageTimestamp || message.timestamp || null, message);
+        if (runtime?.element) container.prepend(runtime.element);
+        return;
+    }
 
     if (role.toLowerCase() === 'system') {
         const bubble = document.createElement('div');
@@ -7616,7 +7644,7 @@ const jumpToMessage = async (messageIndex) => {
         
         // 渲染消息
         messagesToRender.forEach((msg, relativeIndex) => {
-            if (!msg.hidden) { 
+            if (shouldRenderChatHistoryMessage(msg)) {
                 const absoluteIndex = startIndex + relativeIndex;
                 appendMessage(msg, absoluteIndex); 
             }
@@ -7670,7 +7698,7 @@ const jumpToMessage = async (messageIndex) => {
         
         // 渲染消息
         messagesToRender.forEach((msg, relativeIndex) => {
-            if (!msg.hidden) { 
+            if (shouldRenderChatHistoryMessage(msg)) {
                 const absoluteIndex = startIndex + relativeIndex;
                 appendMessage(msg, absoluteIndex); 
             }
@@ -7750,7 +7778,7 @@ const jumpToMessage = async (messageIndex) => {
                 
                 // 渲染所有消息
                 chat.history.forEach((msg, index) => {
-                    if (!msg.hidden) { 
+                    if (shouldRenderChatHistoryMessage(msg)) {
                         appendMessage(msg, index); 
                     }
                 });
@@ -8115,7 +8143,7 @@ messagesDiv.style.backgroundColor = chat.wallpaper ? 'transparent' : '';
         // 3. 只渲染最近的一批消息
         const messagesToRender = chat.history.slice(startIndex);
         messagesToRender.forEach((msg, relativeIndex) => {
-            if (!msg.hidden) { 
+            if (shouldRenderChatHistoryMessage(msg)) {
                 const absoluteIndex = startIndex + relativeIndex;
                 appendMessage(msg, absoluteIndex); 
             }
@@ -8158,7 +8186,7 @@ const loadMoreMessages = async () => {
     // (这部分逻辑不变) 倒序循环，将旧消息一条条插入到顶部
     for (let i = messagesToPrepend.length - 1; i >= 0; i--) {
         const msg = messagesToPrepend[i];
-        if (!msg.hidden) {
+        if (shouldRenderChatHistoryMessage(msg)) {
             const absoluteIndex = startIndex + i;
             prependMessage(msg, messagesDiv, absoluteIndex);
         }
@@ -19351,6 +19379,7 @@ const init = async () => {
     appState.primaryApiConfig = await dbStorage.get(KEYS.PRIMARY_API, { url: '', key: '', model: '', presetName: '' });
     appState.secondaryApiConfig = await dbStorage.get(KEYS.SECONDARY_API, { url: '', key: '', model: '', presetName: '' });
     appState.mcpServers = sanitizeMcpConfigsForBackup(await dbStorage.get(KEYS.MCP_CONFIGS, []));
+    appState.mcpTraceVisible = await dbStorage.get(KEYS.MCP_TRACE_VISIBLE, true);
     appState.ethicalBypass = await dbStorage.get(KEYS.ETHICAL_BYPASS, { enabled: false, prompt: '' });
     appState.personas.ai = await dbStorage.get(KEYS.PERSONA_AI, []);
     appState.personas.my = await dbStorage.get(KEYS.PERSONA_MY, []);
@@ -19867,7 +19896,7 @@ const exportDataSimple = async () => {
     // 1. 定义需要备份的所有资料的 KEY
     const keysToExport = [
         KEYS.API, KEYS.API_PRESETS, KEYS.PRIMARY_API, KEYS.SECONDARY_API, KEYS.ETHICAL_BYPASS,
-        KEYS.MCP_CONFIGS,
+        KEYS.MCP_CONFIGS, KEYS.MCP_TRACE_VISIBLE,
         KEYS.CHATS, KEYS.CONTACTS, KEYS.PERSONA_AI, KEYS.PERSONA_MY,
         KEYS.HOME_WALLPAPER, KEYS.HOME_TIME_DISPLAY, KEYS.HOME_TIME_SIZE, KEYS.MOMENTS_DATA, KEYS.DECORATIVE_WIDGET_IMAGES,
         KEYS.STICKERS, KEYS.AI_STICKERS, KEYS.PROMPTS, KEYS.DARK_MODE, 
