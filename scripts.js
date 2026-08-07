@@ -1464,8 +1464,13 @@ const buildMcpToolExecutionContext = (chat, history, extra = '') => {
 };
 
 const buildMcpContextMessage = (label, payload) => ({
+    role: 'assistant',
+    content: `【你刚刚执行的${label}】\n${stringifyMcpContent(payload)}`
+});
+
+const buildMcpContinuationMessage = () => ({
     role: 'user',
-    content: `【${label}】\n${stringifyMcpContent(payload)}`
+    content: '【MCP 运行时续答】上面的数据来自你在本轮回复前刚刚完成的 MCP 工具调用，不是用户提供的数据。请直接依据调用结果继续回答本轮最初的用户请求。'
 });
 
 const serializeMcpTraceValue = (value) => {
@@ -11369,7 +11374,12 @@ ${shopItemsPrompt}
             const tracePayload = getMcpTracePayload(message);
             return (tracePayload?.traceId || message?.traceId || '') !== currentMcpTraceId;
         }));
-        let messages = [{ role: 'system', content: systemPrompt }, ...historyForAPI, ...mcpContextMessages];
+        let messages = [
+            { role: 'system', content: systemPrompt },
+            ...historyForAPI,
+            ...mcpContextMessages,
+            ...(mcpContextMessages.length ? [buildMcpContinuationMessage()] : [])
+        ];
         
         if (chat.timeAwareness) {
             const now = new Date();
