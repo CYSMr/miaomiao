@@ -987,13 +987,13 @@ img{image-rendering:optimizeSpeed;image-rendering:-webkit-optimize-contrast;imag
 .user-platform-ios #chat-screen .chat-input-area {
     padding: 6px !important;
     padding-bottom: calc(4px + env(safe-area-inset-bottom)) !important;
-    bottom: -35px !important;
+    bottom: 0 !important;
 }
 
 .user-platform-ios .screen:not(#chat-screen) .chat-input-area {
     padding: 4px !important;
     padding-bottom: calc(4px + env(safe-area-inset-bottom)) !important;
-    bottom: -35px !important;
+    bottom: 0 !important;
 }
 
 /* iOS模式下增加聊天消息底部安全距离 */
@@ -1085,7 +1085,7 @@ img{image-rendering:optimizeSpeed;image-rendering:-webkit-optimize-contrast;imag
 
 .user-platform-ios #tab-bar {
     padding-bottom: calc(6px + env(safe-area-inset-bottom)) !important;
-    bottom: -35px !important;
+    bottom: 0 !important;
     height: 30px !important;
 }
 
