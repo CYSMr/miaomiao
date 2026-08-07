@@ -22902,6 +22902,28 @@ if (!document.getElementById('music-error-style')) {
 
 // === 音乐背景设置功能 ===
 
+const DEFAULT_MUSIC_BACKGROUND_URL = 'https://i.postimg.cc/4ynp8ppZ/1040g3k8321k4emon7u905o4jout095tf3p33pv0-nd-dft-wlteh-jpg-3.jpg';
+const DEFAULT_MUSIC_THEME = 'mist';
+const MUSIC_THEME_NAMES = new Set(['mist', 'silver', 'violet', 'berry']);
+
+function applyMusicTheme(themeName, shouldSave = true) {
+    const selectedTheme = MUSIC_THEME_NAMES.has(themeName) ? themeName : DEFAULT_MUSIC_THEME;
+    const musicScreen = document.getElementById('music-player-screen');
+    if (musicScreen) musicScreen.dataset.musicTheme = selectedTheme;
+
+    document.querySelectorAll('.music-theme-option').forEach((button) => {
+        const isSelected = button.dataset.musicTheme === selectedTheme;
+        button.classList.toggle('active', isSelected);
+        button.setAttribute('aria-checked', String(isSelected));
+    });
+
+    if (shouldSave) localStorage.setItem('musicTheme', selectedTheme);
+}
+
+function loadMusicTheme() {
+    applyMusicTheme(localStorage.getItem('musicTheme') || DEFAULT_MUSIC_THEME, false);
+}
+
 // 应用音乐背景
 function applyMusicBackground() {
     const url = document.getElementById('music-bg-url-input').value.trim();
@@ -22966,8 +22988,8 @@ function clearMusicBackground() {
     // 从localStorage中删除
     localStorage.removeItem('musicBackgroundUrl');
     
-    // 恢复默认样式
-    updateMusicBackgroundStyle('');
+    // 恢复项目默认背景
+    updateMusicBackgroundStyle(DEFAULT_MUSIC_BACKGROUND_URL);
     
     // 隐藏当前背景信息
     document.getElementById('current-music-bg-info').style.display = 'none';
@@ -22982,6 +23004,8 @@ function loadMusicBackground() {
         updateMusicBackgroundStyle(savedUrl);
         const displayUrl = savedUrl.startsWith('data:') ? '本地上传的图片' : savedUrl;
         updateMusicBgInfoDisplay(displayUrl);
+    } else {
+        updateMusicBackgroundStyle(DEFAULT_MUSIC_BACKGROUND_URL);
     }
 }
 
@@ -23466,10 +23490,15 @@ document.addEventListener('DOMContentLoaded', () => {
     });
     document.getElementById('music-bg-file-input').addEventListener('change', handleMusicBgFileUpload);
     document.getElementById('clear-music-bg-btn').addEventListener('click', clearMusicBackground);
+    document.getElementById('music-theme-picker').addEventListener('click', (event) => {
+        const themeButton = event.target.closest('.music-theme-option');
+        if (themeButton) applyMusicTheme(themeButton.dataset.musicTheme);
+    });
     
     // 初始化时加载已保存的动图URL和音乐背景
     loadPlayerGifUrl();
     loadMusicBackground();
+    loadMusicTheme();
     
     // 新的毛玻璃风格音乐播放器交互功能
     initMusicPlayerGlassEffects();
