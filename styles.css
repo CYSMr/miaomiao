@@ -116,13 +116,11 @@ body {
     overscroll-behavior: none;
 }
 
-/* iOS 会无视根节点的普通 overflow，产生整页橡皮筋拖拽；固定根视口即可
-   保留各页面内部列表、聊天和歌词区域自己的滚动。 */
+/* 首页本身没有滚动内容，直接禁用平移手势，避免 iOS 整页橡皮筋拖拽。
+   不固定 body：fixed body 会被 iOS 截在底部安全区上方，形成白色遮挡。 */
 html.user-platform-ios body {
-    position: fixed;
-    top: 0;
-    left: 0;
-    width: 100vw;
+    position: static;
+    width: 100%;
     height: 100vh;
     overflow: hidden;
 }
