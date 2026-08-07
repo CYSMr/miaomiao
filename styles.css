@@ -124,15 +124,13 @@ html.user-platform-ios body {
     left: 0;
     width: 100vw;
     height: 100vh;
-    height: 100dvh;
     overflow: hidden;
 }
 
 html.user-platform-ios #phone-screen {
     width: 100%;
     height: 100vh;
-    height: 100dvh;
-    min-height: 100dvh;
+    min-height: 100vh;
     max-height: none;
     overflow: hidden;
     overscroll-behavior: none;
