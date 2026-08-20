@@ -838,6 +838,9 @@ img{image-rendering:optimizeSpeed;image-rendering:-webkit-optimize-contrast;imag
 .message-bubble.system.clickable-log:active { background-color: #d1d1d1; transform: scale(0.98); }
 .message-bubble.is-voice-message .content { padding: 0 !important; background-color: transparent !important; }
 .voice-message-body { display: flex; align-items: center; cursor: pointer; padding: 10px 14px; border-radius: 5px; }
+.voice-message-body.is-loading { opacity: 0.65; cursor: wait; }
+.voice-message-body.is-playing .voice-play-icon { animation: voicePlayingPulse 0.9s ease-in-out infinite alternate; }
+@keyframes voicePlayingPulse { from { opacity: 0.45; } to { opacity: 1; } }
 .message-bubble.user .voice-message-body { flex-direction: row-reverse; background-color: var(--user-bubble-bg); }
 .message-bubble.ai .voice-message-body { background-color: var(--ai-bubble-bg); }
 .voice-play-icon { height: 20px; width: auto; vertical-align: middle; }
@@ -3375,6 +3378,10 @@ img{image-rendering:optimizeSpeed;image-rendering:-webkit-optimize-contrast;imag
 #api-settings-screen .settings-page-content { padding-left: 35px; padding-right: 35px; }
 #api-settings-screen .form-group input, #api-settings-screen .form-group select { background-color: #f1f1f1; border: none; border-radius: 14px; text-align: center; }
 #api-settings-screen .form-group input:focus, #api-settings-screen .form-group select:focus { box-shadow: none; outline: none; }
+.minimax-voice-settings { padding-top: 18px; border-top: 1px solid var(--divider-color); }
+.minimax-voice-settings > label:not(.minimax-voice-heading) { margin-top: 12px; }
+.minimax-voice-heading { display: flex !important; justify-content: space-between; align-items: center; }
+.minimax-voice-help { margin: 0 0 12px; color: var(--text-secondary); font-size: 12px; line-height: 1.5; }
 #api-settings-screen .settings-actions { flex-direction: column; border-top: none; gap: 12px; align-items: center; padding: 60px 35px 40px 60px; }
 #api-settings-screen .settings-actions button { width: 60%; flex: none; border-radius: 50px; border: none; padding-top: 12px; padding-bottom: 12px; }
 #api-settings-screen .fetch-btn { background-color: #f1f1f1; color: #000000; }

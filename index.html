@@ -996,7 +996,30 @@
             </p>
         </div>
         
-        <div class="form-group"><label for="api-url-input">API (OpenAI 格式)</label><input type="text" id="api-url-input" placeholder="例如：https://api.openai.com/v1"></div><div class="form-group"><label for="api-key-input">API Key (金钥)</label><input type="password" id="api-key-input" placeholder="sk-..."></div><div class="form-group"><label for="api-model-input">API 模型名称</label><select id="api-model-select" style="display: none; margin-bottom: 8px;"></select><input type="text" id="api-model-input" placeholder="点击下方获取或手动输入"></div><div class="form-group"><label style="display: flex; align-items: center; gap: 10px; margin-bottom: 8px;"><span>解除道德限制</span><div id="ethical-bypass-toggle" class="toggle-switch" style="scale: 0.8;"><div class="toggle-knob"></div></div></label><textarea id="ethical-bypass-prompt" rows="6" placeholder="在此输入用于解除道德限制的自定义提示词，将会添加到所有AI调用的提示词末尾..." style="width: 100%; border-radius: 12px; border: 1px solid #dde2e8; background-color: #ffffff; padding: 12px; font-size: 14px; box-sizing: border-box; resize: vertical; min-height: 120px;" disabled></textarea></div></div><div class="settings-actions"><button id="fetch-models-btn" class="fetch-btn">获取模型</button><button class="save-btn" id="save-api-btn">储存全部设定</button></div></div>
+        <div class="form-group"><label for="api-url-input">API (OpenAI 格式)</label><input type="text" id="api-url-input" placeholder="例如：https://api.openai.com/v1"></div><div class="form-group"><label for="api-key-input">API Key (金钥)</label><input type="password" id="api-key-input" placeholder="sk-..."></div><div class="form-group"><label for="api-model-input">API 模型名称</label><select id="api-model-select" style="display: none; margin-bottom: 8px;"></select><input type="text" id="api-model-input" placeholder="点击下方获取或手动输入"></div>
+
+        <div id="minimax-voice-settings" class="form-group minimax-voice-settings">
+            <label class="minimax-voice-heading">
+                <span>MiniMax 语音</span>
+                <div id="minimax-voice-enabled" class="toggle-switch" role="switch" aria-checked="false"><div class="toggle-knob"></div></div>
+            </label>
+            <p class="minimax-voice-help">启用后，点击 AI 发来的语音条即可生成并播放；同一条语音会自动缓存。</p>
+            <label for="minimax-voice-region">接口地区</label>
+            <select id="minimax-voice-region">
+                <option value="cn">国内</option>
+                <option value="global">国际</option>
+            </select>
+            <label for="minimax-voice-api-key">MiniMax API Key</label>
+            <input type="password" id="minimax-voice-api-key" placeholder="开放平台 API Key">
+            <label for="minimax-voice-group-id">Group ID（国内版）</label>
+            <input type="text" id="minimax-voice-group-id" placeholder="国内版填写，国际版可留空">
+            <label for="minimax-voice-model">语音模型</label>
+            <input type="text" id="minimax-voice-model" value="speech-02-hd" placeholder="speech-02-hd">
+            <label for="minimax-voice-id">音色 ID</label>
+            <input type="text" id="minimax-voice-id" placeholder="例如 ttv-voice-...">
+        </div>
+
+        <div class="form-group"><label style="display: flex; align-items: center; gap: 10px; margin-bottom: 8px;"><span>解除道德限制</span><div id="ethical-bypass-toggle" class="toggle-switch" style="scale: 0.8;"><div class="toggle-knob"></div></div></label><textarea id="ethical-bypass-prompt" rows="6" placeholder="在此输入用于解除道德限制的自定义提示词，将会添加到所有AI调用的提示词末尾..." style="width: 100%; border-radius: 12px; border: 1px solid #dde2e8; background-color: #ffffff; padding: 12px; font-size: 14px; box-sizing: border-box; resize: vertical; min-height: 120px;" disabled></textarea></div></div><div class="settings-actions"><button id="fetch-models-btn" class="fetch-btn">获取模型</button><button class="save-btn" id="save-api-btn">储存全部设定</button></div></div>
         <div id="home-settings-screen" class="screen"><header class="app-header"><button id="home-settings-back-btn" class="back-btn">‹</button><h2>壁纸设定</h2></header><div class="settings-page-content"><div class="form-group"><label>壁纸设定</label><div><img id="home-wallpaper-preview" class="wallpaper-preview" src="" alt=""><div class="wallpaper-actions"><button class="upload-btn" onclick="document.getElementById('home-wallpaper-upload').click()">更换背景</button><button id="clear-home-wallpaper-btn" class="upload-btn">清除背景</button></div><input type="file" id="home-wallpaper-upload" accept="image/*" style="display:none;"></div></div></div><div class="settings-actions"><button id="save-home-settings-btn" class="save-btn">储存设定</button></div></div>
         <div id="icon-settings-screen" class="screen"><header class="app-header"><button id="icon-settings-back-btn" class="back-btn">‹</button><h2>app图标</h2></header><div class="settings-page-content"><p style="text-align: center; color: var(--system-message-color); font-size: 13px; padding: 0 20px 10px;">点击下方的图示，即可更换图片。</p><div id="icon-grid-container" class="actions-grid" style="padding: 15px; gap: 20px;"></div></div><input type="file" id="icon-upload-input" accept="image/*" style="display: none;"><div class="settings-actions" style="padding: 15px 35px 40px 35px;"><button id="cancel-icon-changes-btn" class="action-btn-secondary">清除全部</button><button id="save-icon-changes-btn" class="save-btn">保存全部图示</button></div></div>
         <div id="persona-selection-modal" class="screen" style="background: rgba(0,0,0,0.4); justify-content: center; align-items: center; z-index: 100;"><div class="modal-box"><header class="app-header" style="border-bottom: 1px solid #eee; padding-left:0; padding-right: 0;"><h2 id="persona-selection-modal-title" style="position: static; transform: none;">选择一个预设</h2></header><div class="list-container" id="modal-persona-list" style="max-height: 400px;"></div><div class="settings-actions" style="border-top: 1px solid #eee; padding: 15px 0 0 0;"><button id="cancel-selection-btn" class="action-btn-secondary">取消</button><button id="save-selection-btn" class="save-btn">储存</button></div></div></div>

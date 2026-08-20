@@ -419,6 +419,7 @@ const KEYS = {
     API_PRESETS: 'apiPresets',
     PRIMARY_API: 'primaryApiConfig',
     SECONDARY_API: 'secondaryApiConfig',
+    MINIMAX_VOICE_CONFIG: 'minimaxVoiceConfig',
     CHATS: 'chats',
     CONTACTS: 'user_contacts_list', 
     PERSONA_AI: 'persona_ai',
@@ -3975,6 +3976,7 @@ const appState = {
     apiPresets: [], // API预设列表
     primaryApiConfig: { url: '', key: '', model: '', presetName: '' }, // 主API配置
     secondaryApiConfig: { url: '', key: '', model: '', presetName: '' }, // 副API配置
+    minimaxVoiceConfig: { enabled: false, region: 'cn', apiKey: '', groupId: '', model: 'speech-02-hd', voiceId: '' },
     mcpServers: [],
     mcpRuntime: {},
     mcpTraceVisible: true,
@@ -5043,6 +5045,153 @@ const handleRegenerateAction = async (clickedMessage) => {
         }
     };
 
+const MINIMAX_VOICE_ENDPOINTS = {
+    cn: 'https://api.minimaxi.com/v1/t2a_v2',
+    global: 'https://api.minimax.io/v1/t2a_v2'
+};
+const MINIMAX_VOICE_CACHE = 'miaomiao-minimax-voice-v1';
+const MINIMAX_VOICE_UNLOCK_AUDIO = 'data:audio/wav;base64,UklGRigAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQQAAACAgICA';
+let activeMiniMaxVoiceAudio = null;
+let activeMiniMaxVoiceElement = null;
+const pendingMiniMaxVoiceRequests = new Map();
+
+const isMiniMaxVoiceConfigured = () => {
+    const config = appState.minimaxVoiceConfig || {};
+    return !!(config.enabled && config.apiKey && config.model && config.voiceId);
+};
+
+const getMiniMaxVoiceText = (message) => {
+    if (!message || !message.content || typeof message.content !== 'object') return '';
+    return String(message.content.text || '').trim();
+};
+
+const makeMiniMaxVoiceCacheRequest = async (text, config) => {
+    const source = `${text}\n${config.voiceId}\n${config.model}\n${config.region}`;
+    let hash;
+    if (window.crypto?.subtle) {
+        const digest = await window.crypto.subtle.digest('SHA-256', new TextEncoder().encode(source));
+        hash = Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, '0')).join('');
+    } else {
+        hash = encodeURIComponent(source).slice(0, 180);
+    }
+    return new Request(`${window.location.origin}/__minimax_voice_cache__/${hash}.mp3`);
+};
+
+const miniMaxHexToBlob = (hex) => {
+    const normalized = String(hex || '').trim();
+    if (!normalized || normalized.length % 2 !== 0 || !/^[0-9a-f]+$/i.test(normalized)) {
+        throw new Error('MiniMax 未返回有效音频');
+    }
+    const bytes = new Uint8Array(normalized.length / 2);
+    for (let i = 0; i < normalized.length; i += 2) {
+        bytes[i / 2] = parseInt(normalized.slice(i, i + 2), 16);
+    }
+    return new Blob([bytes], { type: 'audio/mpeg' });
+};
+
+const fetchMiniMaxVoiceBlob = async (text, config) => {
+    const endpoint = MINIMAX_VOICE_ENDPOINTS[config.region] || MINIMAX_VOICE_ENDPOINTS.cn;
+    const url = new URL(endpoint);
+    if (config.region === 'cn' && config.groupId) url.searchParams.set('GroupId', config.groupId);
+
+    const response = await fetch(url.toString(), {
+        method: 'POST',
+        headers: {
+            'Authorization': `Bearer ${config.apiKey}`,
+            'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+            model: config.model,
+            text,
+            stream: false,
+            voice_setting: {
+                voice_id: config.voiceId,
+                speed: 1,
+                vol: 1,
+                pitch: 0
+            },
+            audio_setting: {
+                sample_rate: 32000,
+                bitrate: 128000,
+                format: 'mp3',
+                channel: 1
+            }
+        })
+    });
+
+    const data = await response.json().catch(() => ({}));
+    const statusCode = data.base_resp?.status_code;
+    if (!response.ok || (statusCode !== undefined && statusCode !== 0) || !data.data?.audio) {
+        throw new Error(data.base_resp?.status_msg || data.message || `MiniMax 请求失败 (${response.status})`);
+    }
+    return miniMaxHexToBlob(data.data.audio);
+};
+
+const getOrCreateMiniMaxVoiceBlob = async (text, config) => {
+    const cacheRequest = await makeMiniMaxVoiceCacheRequest(text, config);
+    const requestKey = cacheRequest.url;
+    const cache = 'caches' in window ? await caches.open(MINIMAX_VOICE_CACHE) : null;
+    const cached = cache ? await cache.match(cacheRequest) : null;
+    if (cached) return cached.blob();
+
+    if (!pendingMiniMaxVoiceRequests.has(requestKey)) {
+        const requestPromise = fetchMiniMaxVoiceBlob(text, config)
+            .then(async blob => {
+                if (cache) await cache.put(cacheRequest, new Response(blob, { headers: { 'Content-Type': 'audio/mpeg' } }));
+                return blob;
+            })
+            .finally(() => pendingMiniMaxVoiceRequests.delete(requestKey));
+        pendingMiniMaxVoiceRequests.set(requestKey, requestPromise);
+    }
+    return pendingMiniMaxVoiceRequests.get(requestKey);
+};
+
+const stopActiveMiniMaxVoice = () => {
+    if (activeMiniMaxVoiceAudio) {
+        activeMiniMaxVoiceAudio.pause();
+        if (activeMiniMaxVoiceAudio.src?.startsWith('blob:')) URL.revokeObjectURL(activeMiniMaxVoiceAudio.src);
+    }
+    activeMiniMaxVoiceElement?.classList.remove('is-playing');
+    activeMiniMaxVoiceAudio = null;
+    activeMiniMaxVoiceElement = null;
+};
+
+const synthesizeMiniMaxVoice = async (text, message, voiceElement = null) => {
+    const cleanText = String(text || '').trim();
+    if (!cleanText || !isMiniMaxVoiceConfigured()) return false;
+
+    const target = voiceElement || document.querySelector(`#message-${message?.timestamp} .voice-message-body`);
+    stopActiveMiniMaxVoice();
+    const audio = new Audio(MINIMAX_VOICE_UNLOCK_AUDIO);
+    activeMiniMaxVoiceAudio = audio;
+    activeMiniMaxVoiceElement = target;
+    // 在点击事件仍保有用户手势时先解锁播放器，避免 iOS 等待网络后拦截播放。
+    audio.play().catch(() => {});
+    target?.classList.add('is-loading');
+    try {
+        const blob = await getOrCreateMiniMaxVoiceBlob(cleanText, { ...appState.minimaxVoiceConfig });
+        if (activeMiniMaxVoiceAudio !== audio) return false;
+        const objectUrl = URL.createObjectURL(blob);
+        audio.src = objectUrl;
+        target?.classList.add('is-playing');
+        const cleanup = () => {
+            if (activeMiniMaxVoiceAudio === audio) stopActiveMiniMaxVoice();
+            else URL.revokeObjectURL(objectUrl);
+        };
+        audio.addEventListener('ended', cleanup, { once: true });
+        audio.addEventListener('error', cleanup, { once: true });
+        await audio.play();
+        return true;
+    } catch (error) {
+        if (activeMiniMaxVoiceAudio === audio) stopActiveMiniMaxVoice();
+        throw error;
+    } finally {
+        target?.classList.remove('is-loading');
+    }
+};
+
+window.synthesizeMiniMaxVoice = synthesizeMiniMaxVoice;
+
 // --- ▼▼▼ 修改为双击触发菜单功能 ▼▼▼ ---
 const addInteractionHandlers = (element, message) => {
     const handleSingleClick = (targetElement) => {
@@ -5055,6 +5204,14 @@ const addInteractionHandlers = (element, message) => {
         if (message && typeof message.content === 'object' && message.content !== null) {
             if (message.content.type === 'voice' || message.content.type === 'send_voice') {
                 if (targetElement.closest('.voice-message-body')) {
+                    if (message.role === 'assistant' && isMiniMaxVoiceConfigured()) {
+                        const voiceElement = targetElement.closest('.voice-message-body');
+                        synthesizeMiniMaxVoice(getMiniMaxVoiceText(message), message, voiceElement).catch(error => {
+                            console.error('MiniMax 语音生成失败:', error);
+                            toggleTranscription(message.timestamp);
+                        });
+                        return;
+                    }
                     toggleTranscription(message.timestamp);
                     return;
                 }
@@ -15892,6 +16049,7 @@ document.getElementById('import-file-input').addEventListener('change', handleIm
     safeSetOnClick('settings-hub-api-btn', () => {
         loadApiPresets();
         switchApiMode('primary'); // 默认显示主API
+        populateMiniMaxVoiceSettings();
         showScreen('api-settings-screen');
     });
     bindMcpSettingsEvents();
@@ -16456,6 +16614,35 @@ const deletePreset = async () => {
     }
 };
 
+const populateMiniMaxVoiceSettings = () => {
+    const config = appState.minimaxVoiceConfig || {};
+    const enabledToggle = document.getElementById('minimax-voice-enabled');
+    if (enabledToggle) {
+        enabledToggle.classList.toggle('active', !!config.enabled);
+        enabledToggle.setAttribute('aria-checked', String(!!config.enabled));
+    }
+    const values = {
+        'minimax-voice-region': config.region || 'cn',
+        'minimax-voice-api-key': config.apiKey || '',
+        'minimax-voice-group-id': config.groupId || '',
+        'minimax-voice-model': config.model || 'speech-02-hd',
+        'minimax-voice-id': config.voiceId || ''
+    };
+    Object.entries(values).forEach(([id, value]) => {
+        const input = document.getElementById(id);
+        if (input) input.value = value;
+    });
+};
+
+const readMiniMaxVoiceSettings = () => ({
+    enabled: document.getElementById('minimax-voice-enabled')?.classList.contains('active') || false,
+    region: document.getElementById('minimax-voice-region')?.value || 'cn',
+    apiKey: document.getElementById('minimax-voice-api-key')?.value.trim() || '',
+    groupId: document.getElementById('minimax-voice-group-id')?.value.trim() || '',
+    model: document.getElementById('minimax-voice-model')?.value.trim() || 'speech-02-hd',
+    voiceId: document.getElementById('minimax-voice-id')?.value.trim() || ''
+});
+
 // 切换API模式
 const switchApiMode = (mode) => {
     currentApiMode = mode;
@@ -16527,6 +16714,9 @@ document.getElementById('api-mode-selector').addEventListener('click', (e) => {
         // 保持向后兼容，同时更新旧的apiConfig
         appState.apiConfig = { url, key, model };
         await dbStorage.set(KEYS.API, appState.apiConfig);
+
+        appState.minimaxVoiceConfig = readMiniMaxVoiceSettings();
+        await dbStorage.set(KEYS.MINIMAX_VOICE_CONFIG, appState.minimaxVoiceConfig);
         
         // 保存道德限制设置
         appState.ethicalBypass = { 
@@ -16629,6 +16819,11 @@ document.getElementById('ethical-bypass-toggle').onclick = (e) => {
     e.currentTarget.classList.toggle('active');
     const promptTextarea = document.getElementById('ethical-bypass-prompt');
     promptTextarea.disabled = !e.currentTarget.classList.contains('active');
+};
+
+document.getElementById('minimax-voice-enabled').onclick = (e) => {
+    e.currentTarget.classList.toggle('active');
+    e.currentTarget.setAttribute('aria-checked', String(e.currentTarget.classList.contains('active')));
 };
 
 document.getElementById('save-chat-settings-btn').onclick = async () => {
@@ -19398,6 +19593,7 @@ const init = async () => {
     appState.apiPresets = await dbStorage.get(KEYS.API_PRESETS, []);
     appState.primaryApiConfig = await dbStorage.get(KEYS.PRIMARY_API, { url: '', key: '', model: '', presetName: '' });
     appState.secondaryApiConfig = await dbStorage.get(KEYS.SECONDARY_API, { url: '', key: '', model: '', presetName: '' });
+    appState.minimaxVoiceConfig = await dbStorage.get(KEYS.MINIMAX_VOICE_CONFIG, { enabled: false, region: 'cn', apiKey: '', groupId: '', model: 'speech-02-hd', voiceId: '' });
     appState.mcpServers = sanitizeMcpConfigsForBackup(await dbStorage.get(KEYS.MCP_CONFIGS, []));
     appState.mcpTraceVisible = await dbStorage.get(KEYS.MCP_TRACE_VISIBLE, true);
     appState.ethicalBypass = await dbStorage.get(KEYS.ETHICAL_BYPASS, { enabled: false, prompt: '' });
@@ -19617,6 +19813,7 @@ const init = async () => {
     if (apiUrlInput) apiUrlInput.value = appState.primaryApiConfig.url || '';
     if (apiKeyInput) apiKeyInput.value = appState.primaryApiConfig.key || '';
     if (apiModelInput) apiModelInput.value = appState.primaryApiConfig.model || '';
+    populateMiniMaxVoiceSettings();
     
     // 如果有预设名称，在选择器中选中
     if (appState.primaryApiConfig.presetName && presetSelect) {
