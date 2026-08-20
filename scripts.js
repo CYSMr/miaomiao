@@ -19739,7 +19739,8 @@ const init = async () => {
     switchTab('chat');
     showScreen('home-screen');
 
-    initAiMomentTimers(); // 启动所有AI的朋友圈自动发布定时器
+    restoreChatAutomationTimers(); // 以对话里的开关恢复主动消息和朋友圈
+    initAiMomentTimers(); // 兼容旧版全局AI朋友圈设置
     // initializeAllProactiveTimers(); // 主动搭话功能已删除
 
     const island = document.getElementById('dynamic-island');
@@ -21224,7 +21225,7 @@ function updateBackgroundActivityButton() {
 }
 
 // 处理对话设定页面的后台活动开关切换（按对话）
-function handleChatBackgroundActivityToggle() {
+async function handleChatBackgroundActivityToggle() {
     const chat = appState.chats[appState.activeChatId];
     if (!chat) return;
     
@@ -21247,6 +21248,9 @@ function handleChatBackgroundActivityToggle() {
         
         // 切换开关状态
         toggle.classList.toggle('active', newStatus);
+
+        await dbStorage.set(KEYS.CHATS, appState.chats);
+        restoreChatAutomationTimers();
         
         // 只更新状态文字，不更新toggle（避免覆盖刚才的切换）
         const chatStatusDiv = document.getElementById('chat-background-activity-status');
@@ -21269,13 +21273,20 @@ function handleChatBackgroundActivityToggle() {
 }
 
 // 处理对话设定页面的间隔时间变化（按对话）
-function handleChatBackgroundIntervalChange() {
+async function handleChatBackgroundIntervalChange() {
     const toggle = document.getElementById('chat-background-activity-toggle');
     const intervalInput = document.getElementById('chat-background-interval-input');
     
     if (toggle && intervalInput && toggle.classList.contains('active')) {
         const interval = Math.max(30, parseInt(intervalInput.value) || 60);
         intervalInput.value = interval;
+
+        const chat = appState.chats[appState.activeChatId];
+        if (chat) {
+            chat.backgroundActivity = { enabled: true, interval };
+            await dbStorage.set(KEYS.CHATS, appState.chats);
+            restoreChatAutomationTimers();
+        }
         
         // 更新状态显示
         updateBackgroundActivityButton();
@@ -21834,7 +21845,7 @@ async function triggerProactiveMessage(chat) {
         const messagesPayload = [];
         
         // 构建主动消息的prompt
-        const systemPrompt = buildProactivePrompt(chat);
+        const systemPrompt = buildProactivePrompt(chat, chat.id);
         messagesPayload.push({ role: 'system', content: systemPrompt });
         
         // 获取处理过的历史记录，传递完整的chat对象作为覆盖参数
@@ -22031,7 +22042,7 @@ async function triggerProactiveMessage(chat) {
 }
 
 // 构建主动消息的prompt（与旧版本保持一致）
-function buildProactivePrompt(chat) {
+function buildProactivePrompt(chat, chatId) {
     const now = new Date();
     const currentTime = now.toLocaleTimeString('zh-CN', { hour: 'numeric', minute: 'numeric', hour12: true });
     const userNickname = appState.qzoneSettings?.nickname || '用户';
@@ -22204,6 +22215,11 @@ function loadBackgroundActivitySettings() {
         backgroundActivitySettings.timerId = null;
     }
 }
+
+window.startBackgroundActivity = startBackgroundActivity;
+window.stopBackgroundActivity = stopBackgroundActivity;
+window.runBackgroundActivityTick = runBackgroundActivityTick;
+window.triggerProactiveMessage = triggerProactiveMessage;
 
 
 
@@ -36572,14 +36588,9 @@ async function triggerMomentsPost(chatId, chat) {
                 comments: []
             };
             
-            // 保存到朋友圈数据
-            if (!appState.moments) {
-                appState.moments = [];
-            }
-            appState.moments.unshift(newPost);
-            
-            // 保存到数据库
-            await dbStorage.set(KEYS.MOMENTS, appState.moments);
+            // 写入页面实际使用的朋友圈数据结构
+            appState.momentsData.posts.unshift(newPost);
+            await saveAndRenderMoments();
             
             console.log(`📸 [AI发朋友圈] 朋友圈已保存到数据库`);
         } else {
@@ -36639,23 +36650,41 @@ async function saveChatMomentsSettings(chatId) {
     
     console.log('💾 保存朋友圈设置:', chat.momentsActivity);
     
-    // 检查是否有任何对话启用了朋友圈
-    const hasAnyEnabled = Object.values(appState.chats).some(c => c.momentsActivity?.enabled);
-    
-    if (hasAnyEnabled) {
-        if (!momentsActivitySettings.enabled) {
-            console.log('🚀 检测到有对话启用了朋友圈，启动全局定时器');
-            momentsActivitySettings.enabled = true;
-            startMomentsActivity();
-        }
-    } else {
-        if (momentsActivitySettings.enabled) {
-            console.log('💤 所有对话都已关闭朋友圈，停止全局定时器');
-            stopMomentsActivity();
-        }
-    }
-    
     await dbStorage.set(KEYS.CHATS, appState.chats);
+    restoreChatAutomationTimers();
+}
+
+// 对话内开关是当前页面的真实状态，应用启动和设置变更都从它恢复。
+function restoreChatAutomationTimers() {
+    const chats = Object.values(appState.chats || {});
+    const messageChats = chats.filter(chat => chat.backgroundActivity?.enabled);
+    const momentChats = chats.filter(chat => chat.momentsActivity?.enabled);
+
+    if (messageChats.length === 0) {
+        stopBackgroundActivity();
+    } else {
+        const interval = Math.min(...messageChats.map(chat => Math.max(30, chat.backgroundActivity.interval || 60)));
+        if (backgroundActivitySettings.timerId && backgroundActivitySettings.interval !== interval) {
+            clearInterval(backgroundActivitySettings.timerId);
+            backgroundActivitySettings.timerId = null;
+        }
+        backgroundActivitySettings.enabled = true;
+        backgroundActivitySettings.interval = interval;
+        startBackgroundActivity();
+    }
+
+    if (momentChats.length === 0) {
+        stopMomentsActivity();
+    } else {
+        const interval = Math.min(...momentChats.map(chat => Math.max(30, chat.momentsActivity.interval || 180)));
+        if (momentsActivitySettings.timerId && momentsActivitySettings.interval !== interval) {
+            clearInterval(momentsActivitySettings.timerId);
+            momentsActivitySettings.timerId = null;
+        }
+        momentsActivitySettings.enabled = true;
+        momentsActivitySettings.interval = interval;
+        startMomentsActivity();
+    }
 }
 
 console.log('✅ AI自动发朋友圈系统已加载');
