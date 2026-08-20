@@ -5055,8 +5055,14 @@ let activeMiniMaxVoiceAudio = null;
 let activeMiniMaxVoiceElement = null;
 const pendingMiniMaxVoiceRequests = new Map();
 
-const isMiniMaxVoiceConfigured = () => {
-    const config = appState.minimaxVoiceConfig || {};
+const getMiniMaxVoiceConfig = () => {
+    const config = { ...(appState.minimaxVoiceConfig || {}) };
+    const chatVoiceId = String(appState.chats?.[appState.activeChatId]?.minimaxVoiceId || '').trim();
+    if (chatVoiceId) config.voiceId = chatVoiceId;
+    return config;
+};
+
+const isMiniMaxVoiceConfigured = (config = getMiniMaxVoiceConfig()) => {
     return !!(config.enabled && config.apiKey && config.model && config.voiceId);
 };
 
@@ -5088,6 +5094,25 @@ const readMiniMaxVoiceSettings = () => ({
     model: document.getElementById('minimax-voice-model')?.value.trim() || 'speech-02-hd',
     voiceId: document.getElementById('minimax-voice-id')?.value.trim() || ''
 });
+
+const ensureChatMiniMaxVoiceField = () => {
+    let input = document.getElementById('chat-minimax-voice-id');
+    if (input) return input;
+
+    const chatNameInput = document.getElementById('chat-name-input');
+    const chatNameItem = chatNameInput?.closest('.settings-item');
+    if (!chatNameItem) return null;
+
+    const item = document.createElement('div');
+    item.className = 'settings-item';
+    item.innerHTML = `
+        <label for="chat-minimax-voice-id" class="item-label">MiniMax 音色 ID</label>
+        <input type="text" id="chat-minimax-voice-id" placeholder="留空使用 API 设置中的默认音色">
+    `;
+    chatNameItem.insertAdjacentElement('afterend', item);
+    input = item.querySelector('#chat-minimax-voice-id');
+    return input;
+};
 
 const getMiniMaxVoiceText = (message) => {
     if (!message || !message.content || typeof message.content !== 'object') return '';
@@ -5187,7 +5212,8 @@ const stopActiveMiniMaxVoice = () => {
 
 const synthesizeMiniMaxVoice = async (text, message, voiceElement = null) => {
     const cleanText = String(text || '').trim();
-    if (!cleanText || !isMiniMaxVoiceConfigured()) return false;
+    const config = getMiniMaxVoiceConfig();
+    if (!cleanText || !isMiniMaxVoiceConfigured(config)) return false;
 
     const target = voiceElement || document.querySelector(`#message-${message?.timestamp} .voice-message-body`);
     stopActiveMiniMaxVoice();
@@ -5198,7 +5224,7 @@ const synthesizeMiniMaxVoice = async (text, message, voiceElement = null) => {
     audio.play().catch(() => {});
     target?.classList.add('is-loading');
     try {
-        const blob = await getOrCreateMiniMaxVoiceBlob(cleanText, { ...appState.minimaxVoiceConfig });
+        const blob = await getOrCreateMiniMaxVoiceBlob(cleanText, config);
         if (activeMiniMaxVoiceAudio !== audio) return false;
         const objectUrl = URL.createObjectURL(blob);
         audio.src = objectUrl;
@@ -8726,6 +8752,8 @@ const openChatSettings = () => {
     // ▲▲▲ 修改结束 ▲▲▲
 
     document.getElementById('chat-name-input').value = chat.name || '';
+    const chatMiniMaxVoiceInput = ensureChatMiniMaxVoiceField();
+    if (chatMiniMaxVoiceInput) chatMiniMaxVoiceInput.value = chat.minimaxVoiceId || '';
     document.getElementById('chat-wallpaper-status').textContent = chat.wallpaper ? '已设置' : '未设置';
     document.getElementById('chat-memory-rounds-input').value = chat.memoryRounds || 0;
     
@@ -16834,6 +16862,7 @@ document.getElementById('save-chat-settings-btn').onclick = async () => {
     
     // 保存基本设置
     chat.name = document.getElementById('chat-name-input').value.trim();
+    chat.minimaxVoiceId = document.getElementById('chat-minimax-voice-id')?.value.trim() || '';
     
     if (appState.pendingImage) {
         chat.wallpaper = appState.pendingImage;

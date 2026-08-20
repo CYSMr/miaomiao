@@ -1015,8 +1015,8 @@
             <input type="text" id="minimax-voice-group-id" placeholder="国内版填写，国际版可留空">
             <label for="minimax-voice-model">语音模型</label>
             <input type="text" id="minimax-voice-model" value="speech-02-hd" placeholder="speech-02-hd">
-            <label for="minimax-voice-id">音色 ID</label>
-            <input type="text" id="minimax-voice-id" placeholder="例如 ttv-voice-...">
+            <label for="minimax-voice-id">默认音色 ID</label>
+            <input type="text" id="minimax-voice-id" placeholder="未单独配置的聊天使用此音色">
         </div>
 
         <div class="form-group"><label style="display: flex; align-items: center; gap: 10px; margin-bottom: 8px;"><span>解除道德限制</span><div id="ethical-bypass-toggle" class="toggle-switch" style="scale: 0.8;"><div class="toggle-knob"></div></div></label><textarea id="ethical-bypass-prompt" rows="6" placeholder="在此输入用于解除道德限制的自定义提示词，将会添加到所有AI调用的提示词末尾..." style="width: 100%; border-radius: 12px; border: 1px solid #dde2e8; background-color: #ffffff; padding: 12px; font-size: 14px; box-sizing: border-box; resize: vertical; min-height: 120px;" disabled></textarea></div></div><div class="settings-actions"><button id="fetch-models-btn" class="fetch-btn">获取模型</button><button class="save-btn" id="save-api-btn">储存全部设定</button></div></div>
