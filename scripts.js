@@ -9532,10 +9532,71 @@ const describeStructuredMessageForAPI = (message) => {
     }
 };
 
+const formatConversationTimestamp = timestamp => new Intl.DateTimeFormat('zh-CN', {
+    timeZone: 'Asia/Shanghai',
+    year: 'numeric',
+    month: 'long',
+    day: 'numeric',
+    weekday: 'long',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false
+}).format(new Date(timestamp));
+
+const buildCurrentTimeAwarenessPrompt = (timestamp = Date.now()) => {
+    const date = new Date(timestamp);
+    const parts = Object.fromEntries(new Intl.DateTimeFormat('en-US', {
+        timeZone: 'Asia/Shanghai',
+        month: 'numeric',
+        hour: 'numeric',
+        hourCycle: 'h23'
+    }).formatToParts(date).map(part => [part.type, part.value]));
+    const hour = Number(parts.hour);
+    const month = Number(parts.month);
+    const timeOfDay = hour < 5 ? '深夜'
+        : hour < 9 ? '早晨'
+            : hour < 12 ? '上午'
+                : hour < 14 ? '中午'
+                    : hour < 18 ? '下午'
+                        : hour < 22 ? '晚上'
+                            : '深夜';
+    const season = month >= 3 && month <= 5 ? '春季'
+        : month >= 6 && month <= 8 ? '夏季'
+            : month >= 9 && month <= 11 ? '秋季'
+                : '冬季';
+
+    return `\n\n[系统时间信息：当前现实时间是 ${formatConversationTimestamp(timestamp)}，${season}，${timeOfDay}时段。请准确区分当前时间与历史消息时间，并根据上下文理解双方实际间隔了多久；不要把昨天或更早的消息误当成刚刚发生。无需刻意报时，只在相关时自然体现时间流逝。]\n`;
+};
+
+window.buildCurrentTimeAwarenessPrompt = buildCurrentTimeAwarenessPrompt;
+
+const formatConversationGap = milliseconds => {
+    const minutes = Math.max(1, Math.round(milliseconds / 60000));
+    if (minutes < 60) return `${minutes}分钟`;
+    const hours = Math.round(minutes / 60);
+    if (hours < 48) return `${hours}小时`;
+    const days = Math.round(hours / 24);
+    return `${days}天`;
+};
+
+const prependTimelineMarker = (apiMessage, marker) => {
+    if (typeof apiMessage.content === 'string') {
+        return { ...apiMessage, content: `${marker}\n${apiMessage.content}` };
+    }
+    if (Array.isArray(apiMessage.content)) {
+        return {
+            ...apiMessage,
+            content: [{ type: 'text', text: marker }, ...apiMessage.content]
+        };
+    }
+    return apiMessage;
+};
+
 const processHistoryForAPI = (history, chatOverride = null) => {
     const apiHistory = [];
     const processedIndices = new Set();
     const chat = chatOverride || appState.chats[appState.activeChatId]; 
+    let previousTimelineTimestamp = null;
 
     for (let i = 0; i < history.length; i++) {
         if (processedIndices.has(i)) {
@@ -9645,6 +9706,20 @@ const processHistoryForAPI = (history, chatOverride = null) => {
         }
 
         if (currentApiMessage) {
+            const messageTimestamp = Number(m.timestamp);
+            if (chat?.timeAwareness && m.timestamp != null && ['user', 'assistant'].includes(currentApiMessage.role) && Number.isFinite(messageTimestamp)) {
+                let marker = '';
+                if (previousTimelineTimestamp === null) {
+                    marker = `[时间节点：${formatConversationTimestamp(messageTimestamp)}]`;
+                } else {
+                    const gap = messageTimestamp - previousTimelineTimestamp;
+                    if (gap > 3 * 60 * 1000) {
+                        marker = `[时间已经过去约${formatConversationGap(gap)}；当前消息时间：${formatConversationTimestamp(messageTimestamp)}]`;
+                    }
+                }
+                if (marker) currentApiMessage = prependTimelineMarker(currentApiMessage, marker);
+                previousTimelineTimestamp = messageTimestamp;
+            }
             apiHistory.push(currentApiMessage);
         }
     }
@@ -11767,49 +11842,7 @@ ${shopItemsPrompt}
         ];
         
         if (chat.timeAwareness) {
-            const now = new Date();
-            const currentHour = now.getHours();
-            
-            // 时段判断
-            let timeOfDay = '';
-            if (currentHour >= 0 && currentHour < 5) {
-                timeOfDay = '深夜';
-            } else if (currentHour >= 5 && currentHour < 9) {
-                timeOfDay = '早晨';
-            } else if (currentHour >= 9 && currentHour < 12) {
-                timeOfDay = '上午';
-            } else if (currentHour >= 12 && currentHour < 14) {
-                timeOfDay = '中午';
-            } else if (currentHour >= 14 && currentHour < 18) {
-                timeOfDay = '下午';
-            } else if (currentHour >= 18 && currentHour < 22) {
-                timeOfDay = '晚上';
-            } else {
-                timeOfDay = '深夜';
-            }
-            
-            // 季节判断
-            const month = now.getMonth() + 1;
-            let season = '';
-            if (month >= 3 && month <= 5) {
-                season = '春季';
-            } else if (month >= 6 && month <= 8) {
-                season = '夏季';
-            } else if (month >= 9 && month <= 11) {
-                season = '秋季';
-            } else {
-                season = '冬季';
-            }
-            
-            const taiwanTimeOptions = { 
-                timeZone: 'Asia/Taipei', hour12: true, year: 'numeric', month: 'long', 
-                day: 'numeric', weekday: 'long', hour: '2-digit', minute: '2-digit' 
-            };
-            const timeString = now.toLocaleString('zh-TW', taiwanTimeOptions);
-            const weekday = now.toLocaleDateString('zh-TW', { weekday: 'long' });
-            
-            const timePromptInjection = `\n\n[系统备注：当前现实时间是 ${timeString}，${weekday}，${season}，${timeOfDay}时段。请将此时间作为背景信息参考，让你的回复能自然地符合当前的时间氛围。]\n`;
-            messages[0].content = timePromptInjection + messages[0].content;
+            messages[0].content = buildCurrentTimeAwarenessPrompt() + messages[0].content;
         }
         
         const options = { temperature: 0.85 };
