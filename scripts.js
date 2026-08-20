@@ -5257,7 +5257,7 @@ const addInteractionHandlers = (element, message) => {
             return;
         }
 
-        // 语音消息单击显示文字
+        // 语音消息短点只负责播放；转文字由长按处理
         if (message && typeof message.content === 'object' && message.content !== null) {
             if (message.content.type === 'voice' || message.content.type === 'send_voice') {
                 if (targetElement.closest('.voice-message-body')) {
@@ -5265,11 +5265,8 @@ const addInteractionHandlers = (element, message) => {
                         const voiceElement = targetElement.closest('.voice-message-body');
                         synthesizeMiniMaxVoice(getMiniMaxVoiceText(message), message, voiceElement).catch(error => {
                             console.error('MiniMax 语音生成失败:', error);
-                            toggleTranscription(message.timestamp);
                         });
-                        return;
                     }
-                    toggleTranscription(message.timestamp);
                     return;
                 }
             }
@@ -5455,7 +5452,63 @@ const addInteractionHandlers = (element, message) => {
     let clickTimer = null;
     const DOUBLE_CLICK_DELAY = 300; // 300ms内的两次点击算作双击
 
+    // 语音条长按显示/隐藏文字；长按结束后的合成 click 不得再触发播放。
+    let voiceLongPressTriggered = false;
+    const voiceMessageBody = element.querySelector('.voice-message-body');
+    if (voiceMessageBody) {
+        let voicePressTimer = null;
+        let startX = 0;
+        let startY = 0;
+
+        const cancelVoicePress = () => {
+            clearTimeout(voicePressTimer);
+            voicePressTimer = null;
+        };
+
+        voiceMessageBody.addEventListener('pointerdown', event => {
+            if (event.pointerType === 'mouse' && event.button !== 0) return;
+            startX = event.clientX;
+            startY = event.clientY;
+            voiceLongPressTriggered = false;
+            cancelVoicePress();
+            voicePressTimer = setTimeout(() => {
+                voiceLongPressTriggered = true;
+                clickCount = 0;
+                clearTimeout(clickTimer);
+                toggleTranscription(message.timestamp);
+                navigator.vibrate?.(20);
+            }, 500);
+        });
+
+        voiceMessageBody.addEventListener('pointermove', event => {
+            if (Math.hypot(event.clientX - startX, event.clientY - startY) > 12) {
+                cancelVoicePress();
+            }
+        });
+
+        ['pointerup', 'pointercancel', 'pointerleave'].forEach(eventName => {
+            voiceMessageBody.addEventListener(eventName, () => {
+                cancelVoicePress();
+                if (voiceLongPressTriggered) {
+                    setTimeout(() => { voiceLongPressTriggered = false; }, 700);
+                }
+            });
+        });
+
+        voiceMessageBody.addEventListener('contextmenu', event => event.preventDefault());
+    }
+
     element.addEventListener('click', (e) => {
+        if (voiceLongPressTriggered && e.target.closest('.voice-message-body')) {
+            e.preventDefault();
+            e.stopPropagation();
+            e.stopImmediatePropagation();
+            voiceLongPressTriggered = false;
+            clickCount = 0;
+            clearTimeout(clickTimer);
+            return;
+        }
+
         clickCount++;
         
         if (clickCount === 1) {
