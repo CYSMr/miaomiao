@@ -21908,6 +21908,11 @@ document.addEventListener('visibilitychange', async function() {
             // 检查打工是否在后台期间完成
             await checkWorkCompletion();
         }
+
+        // iOS 会冻结后台定时器；回到前台时补跑已经到期的论坛刷新。
+        if (typeof refreshForumIfDue === 'function') {
+            refreshForumIfDue();
+        }
     }
 });
 
@@ -29224,7 +29229,8 @@ const forumState = {
     activeCharacters: [],
     worldBooks: [],
     autoRefresh: false,
-    refreshInterval: 30
+    refreshInterval: 30,
+    lastRefreshAt: 0
 };
 
 // 加载论坛数据（仅使用 IndexedDB）
@@ -29326,6 +29332,10 @@ function fixForumDataFormat() {
     }
     if (typeof forumState.refreshInterval !== 'number') {
         forumState.refreshInterval = 30;
+        needsSave = true;
+    }
+    if (typeof forumState.lastRefreshAt !== 'number') {
+        forumState.lastRefreshAt = 0;
         needsSave = true;
     }
     
@@ -29624,31 +29634,35 @@ function renderAvatar(authorAvatar, defaultAvatar = '👤') {
 }
 
 // 打开论坛
-document.getElementById('home-btn-forum')?.addEventListener('click', function() {
+document.getElementById('home-btn-forum')?.addEventListener('click', async function() {
     document.getElementById('home-screen').classList.remove('active');
     document.getElementById('forum-screen').classList.add('active');
-    loadForumData().then(() => {
-        // 初始化自动刷新开关的UI状态
-        const autoRefreshToggle = document.getElementById('forum-auto-refresh-toggle');
-        if (autoRefreshToggle) {
-            if (forumState.autoRefresh) {
-                autoRefreshToggle.classList.add('active');
-            } else {
-                autoRefreshToggle.classList.remove('active');
-            }
-        }
-        
-        // 初始化刷新间隔显示
-        const intervalText = document.getElementById('forum-refresh-interval-text');
-        const intervalSlider = document.getElementById('forum-refresh-interval');
-        if (intervalText && forumState.refreshInterval) {
-            intervalText.textContent = forumState.refreshInterval;
-        }
-        if (intervalSlider && forumState.refreshInterval) {
-            intervalSlider.value = forumState.refreshInterval;
-        }
-    });
+    // 先用内存中的内容瞬间开页，再以 IndexedDB 最新数据覆盖。
     renderForumPosts();
+    await loadForumData();
+
+    // 初始化自动刷新开关的UI状态
+    const autoRefreshToggle = document.getElementById('forum-auto-refresh-toggle');
+    if (autoRefreshToggle) {
+        if (forumState.autoRefresh) {
+            autoRefreshToggle.classList.add('active');
+        } else {
+            autoRefreshToggle.classList.remove('active');
+        }
+    }
+
+    // 初始化刷新间隔显示
+    const intervalText = document.getElementById('forum-refresh-interval-text');
+    const intervalSlider = document.getElementById('forum-refresh-interval');
+    if (intervalText && forumState.refreshInterval) {
+        intervalText.textContent = forumState.refreshInterval;
+    }
+    if (intervalSlider && forumState.refreshInterval) {
+        intervalSlider.value = forumState.refreshInterval;
+    }
+
+    renderForumPosts();
+    refreshForumIfDue();
 });
 
 // 论坛返回按钮
@@ -33813,9 +33827,26 @@ window.favoriteFanfic = function(ficId, event) {
 
 // 论坛自动刷新定时器
 let forumAutoRefreshTimer = null;
+let forumAutoRefreshRunning = false;
+
+function isForumRefreshDue(state = forumState, now = Date.now()) {
+    if (!state?.autoRefresh) return false;
+    const intervalMs = Math.max(1, Number(state.refreshInterval) || 30) * 60 * 1000;
+    const lastRefreshAt = Number(state.lastRefreshAt) || 0;
+    return lastRefreshAt === 0 || now - lastRefreshAt >= intervalMs;
+}
+
+window.isForumRefreshDue = isForumRefreshDue;
+
+function refreshForumIfDue() {
+    if (!isForumRefreshDue() || forumAutoRefreshRunning) return false;
+    return executeForumAutoRefresh();
+}
 
 // 执行论坛自动刷新
 async function executeForumAutoRefresh() {
+    if (forumAutoRefreshRunning) return false;
+    forumAutoRefreshRunning = true;
     console.log('🔄 开始执行论坛自动刷新（使用副API）...');
     
     try {
@@ -33858,8 +33889,9 @@ async function executeForumAutoRefresh() {
             console.log(`✅ 生成 ${r18Posts.length} 条R18帖子`);
         }
         
-        // 保存数据并刷新显示
-        saveForumData();
+        // 保存刷新完成时间，后台恢复后据此判断是否需要补刷。
+        forumState.lastRefreshAt = Date.now();
+        await saveForumData();
         
         // 刷新当前显示的页面
         const activePages = document.querySelectorAll('.forum-page.active-forum-page');
@@ -33875,8 +33907,12 @@ async function executeForumAutoRefresh() {
         }
         
         console.log('✅ 论坛自动刷新完成！');
+        return true;
     } catch (error) {
         console.error('❌ 论坛自动刷新失败:', error);
+        return false;
+    } finally {
+        forumAutoRefreshRunning = false;
     }
 }
 
@@ -33889,12 +33925,12 @@ function startForumAutoRefresh() {
     
     // 设置新的定时器
     const intervalMs = forumState.refreshInterval * 60 * 1000; // 转换为毫秒
-    forumAutoRefreshTimer = setInterval(executeForumAutoRefresh, intervalMs);
+    forumAutoRefreshTimer = setInterval(refreshForumIfDue, intervalMs);
     
     console.log(`🔄 论坛自动刷新已启动，间隔 ${forumState.refreshInterval} 分钟`);
     
-    // 立即执行一次
-    executeForumAutoRefresh();
+    // 首次启用或已错过刷新时立即补跑一次。
+    refreshForumIfDue();
 }
 
 // 停止论坛自动刷新
