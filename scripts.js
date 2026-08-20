@@ -14621,20 +14621,24 @@ function parseAIResponse(content) {
                 } else if (item && typeof item === 'object' && item.type) {
                     // 新格式：已经是正确的对象格式
                     return item;
-                } else if (item && typeof item === 'object' && item.content) {
+                } else if (item && typeof item === 'object' && typeof item.content === 'string') {
                     // 补充缺失的type字段
                     return { type: 'text', ...item };
+                } else if (item && typeof item === 'object') {
+                    console.warn('[智能主动消息] 忽略无法识别的对象:', item);
+                    return null;
                 }
                 return { type: 'text', content: String(item) };
-            });
+            }).filter(Boolean);
         } else if (parsed && typeof parsed === 'object') {
             // 单个对象，转换为数组
             if (parsed.type) {
                 return [parsed];
-            } else if (parsed.content) {
+            } else if (typeof parsed.content === 'string') {
                 return [{ type: 'text', ...parsed }];
             } else {
-                return [{ type: 'text', content: String(parsed) }];
+                console.warn('[智能主动消息] 忽略无法识别的对象:', parsed);
+                return [];
             }
         } else {
             // 其他类型，转换为文本消息
@@ -14691,6 +14695,37 @@ function parseAIResponse(content) {
         return [{ type: 'text', content: "你好呀！在做什么呢？" }];
     }
 }
+
+// 主动消息当前只落库可见文字；状态、心声及其他动作对象由各自功能处理，不能转成文字。
+function extractProactiveTextMessages(messages) {
+    const textMessages = [];
+
+    for (const message of messages || []) {
+        if (typeof message === 'string') {
+            if (message.trim()) textMessages.push(message);
+            continue;
+        }
+
+        if (!message || typeof message !== 'object') continue;
+
+        if (message.type !== 'text') {
+            console.log(`[智能主动消息] 跳过非文字动作: ${message.type || 'unknown'}`);
+            continue;
+        }
+
+        if (typeof message.content !== 'string') {
+            console.warn('[智能主动消息] 文字消息 content 不是字符串，已忽略:', message);
+            continue;
+        }
+
+        if (message.content.trim()) textMessages.push(message.content);
+    }
+
+    return textMessages;
+}
+
+window.parseAIResponse = parseAIResponse;
+window.extractProactiveTextMessages = extractProactiveTextMessages;
 
 // 主动搭话功能已删除
 // async function triggerProactiveMessage(chatId) {
@@ -22126,17 +22161,7 @@ async function triggerProactiveMessage(chat) {
         let validMessages = [];
         
         // 过滤重复和无意义消息（优化过滤逻辑）
-        for (const msgObj of messagesToProcess) {
-            // 处理新的对象格式
-            if (!msgObj || typeof msgObj !== 'object') continue;
-            
-            const content = msgObj.content || String(msgObj);
-            
-            // 只过滤完全空的消息，保留所有有内容的消息（包括空格）
-            if (!content.trim()) {
-                continue;
-            }
-            
+        for (const content of extractProactiveTextMessages(messagesToProcess)) {
             // 大幅放松相似性检测，只过滤完全相同的消息
             if (isMessageSimilar(content, recentMessagesForFiltering, 0.95)) {
                 console.warn('[智能主动消息] 跳过高度重复消息:', content);
