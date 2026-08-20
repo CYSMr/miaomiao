@@ -8273,12 +8273,7 @@ const openChat = async (chatId) => {
     if (!chat) { showScreen('main-hub-screen'); return; }
 
     appState.activeChatId = chatId;
-    
-    // 切换聊天时刷新钱包数据，确保余额是最新的
-    if (typeof refreshWalletFromDB === 'function') {
-        await refreshWalletFromDB();
-    }
-    
+
     document.getElementById('chat-title').textContent = chat.name;
     
     const messagesDiv = document.getElementById('chat-messages');
@@ -8305,8 +8300,17 @@ const openChat = async (chatId) => {
     updateStatusBubble(lastStatus); 
 
     messagesDiv.style.backgroundImage = chat.wallpaper ? `url(${chat.wallpaper})` : 'none';
-// ▼▼▼ 在这里添加下面这行代码 ▼▼▼
-messagesDiv.style.backgroundColor = chat.wallpaper ? 'transparent' : '';
+    // ▼▼▼ 在这里添加下面这行代码 ▼▼▼
+    messagesDiv.style.backgroundColor = chat.wallpaper ? 'transparent' : '';
+
+    // 先立即进入聊天页，不让钱包读取和消息渲染阻塞跳转反馈。
+    showScreen('chat-screen');
+    await new Promise(resolve => requestAnimationFrame(resolve));
+
+    // 钱包余额继续刷新，但与打开聊天无关，不必等它完成。
+    if (typeof refreshWalletFromDB === 'function') {
+        refreshWalletFromDB();
+    }
 
     // 【核心改造】
     if (chat.history && chat.history.length > 0) {
@@ -8350,8 +8354,6 @@ messagesDiv.style.backgroundColor = chat.wallpaper ? 'transparent' : '';
             messagesDiv.scrollTop = messagesDiv.scrollHeight;
         }, 200);
     }
-    
-    showScreen('chat-screen');
 };
 // ▲▲▲ 替换结束 ▲▲▲
 
