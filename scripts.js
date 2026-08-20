@@ -9463,6 +9463,75 @@ async function handleCallDeclineByAI(reason) {
         }
     };
 
+const describeStructuredMessageForAPI = (message) => {
+    const content = message?.content;
+    if (!content || typeof content !== 'object') return null;
+
+    const sender = message.role === 'user' ? '用户' : (message.role === 'assistant' ? '你' : '系统');
+    const recipient = message.role === 'user' ? '你' : '用户';
+    const text = value => String(value || '').trim();
+
+    switch (content.type) {
+        case 'sticker':
+            return `[${sender}发送了表情${content.name ? `，表情内容是：“${content.name}”` : ''}]`;
+        case 'just_image':
+        case 'send_image_url':
+            return `[${sender}发送了一张图片${content.caption ? `：“${content.caption}”` : ''}]`;
+        case 'location':
+            return `[${sender}分享了一个位置：${text(content.address) || '未标注位置'}]`;
+        case 'voice':
+        case 'send_voice':
+            return `[${sender}发送了一段语音${content.text ? `，内容是：“${content.text}”` : ''}]`;
+        case 'send_image_text':
+        case 'image':
+        case 'vision':
+            return `[${sender}发送了一张图片${content.text ? `：“${content.text}”` : ''}]`;
+        case 'html_page':
+            return `[${sender}发送了一个互动页面]`;
+        case 'transfer':
+        case 'send_transfer': {
+            const amount = Number(content.amount || 0).toFixed(2);
+            if (message.role === 'user' && content.statusText === '已收款') {
+                return `[系统事件：用户收下了你发送的 ¥${amount} 转账。]`;
+            }
+            let result = `[${sender}给${recipient}发起了一笔转账，金额为 ¥${amount}`;
+            if (content.remark) result += `，备注是：“${content.remark}”`;
+            if (content.statusText) result += `，状态：${content.statusText}`;
+            return result + ']';
+        }
+        case 'purchase_card': {
+            const action = content.status === 'accepted' ? '接受了' : (content.status === 'declined' ? '退回了' : '收到');
+            let result = `[${recipient}${action}${sender}送的礼物「${content.item || '未命名礼物'}」`;
+            if (content.price !== undefined) result += `(¥${content.price})`;
+            if (content.message) result += `，附言：“${content.message}”`;
+            return result + ']';
+        }
+        case 'forum_share': {
+            const forumType = content.forumType === 'r18' ? 'R18论坛' : (content.forumType === 'fanfic' ? '同人文' : '论坛动态');
+            const comments = Array.isArray(content.comments) && content.comments.length
+                ? '\n\n【评论区】\n' + content.comments.map((comment, index) =>
+                    `${index + 1}. ${comment.authorName || '匿名'}：${comment.content || comment.text || ''}${comment.likes ? ` (👍${comment.likes})` : ''}`
+                ).join('\n')
+                : '';
+            const imageInfo = content.image ? '\n配图：有图片' : '';
+            return `[${sender}分享了一个${forumType}帖子]\n标题：${content.title || '无标题'}\n作者：${content.authorName || '匿名'}\n内容：${content.content || ''}${imageInfo}\n互动：❤️${content.likes || 0} 💬${content.commentsCount || 0}${comments}`;
+        }
+        case 'moment_post':
+            return `[${content.author || sender}发布了一条朋友圈动态：“${content.text || ''}”${content.image ? `，配图：${content.image}` : ''}]`;
+        case 'status_update':
+            return `[系统事件：${sender === '系统' ? '对方' : sender}的状态更新为“${content.status || ''}”]`;
+        case 'user_poke':
+            return content.text || `[${sender}拍了拍${recipient}]`;
+        case 'call_log':
+        case 'music_session_log':
+            return `[系统事件：${content.content || content.text || ''}]`;
+        case 'retraction':
+            return `[系统事件：撤回了一条消息${content.originalContent ? `，内容是：“${content.originalContent}”` : ''}]`;
+        default:
+            return null;
+    }
+};
+
 const processHistoryForAPI = (history, chatOverride = null) => {
     const apiHistory = [];
     const processedIndices = new Set();
@@ -9538,105 +9607,23 @@ const processHistoryForAPI = (history, chatOverride = null) => {
                     currentApiMessage = { role: 'system', content: `[系统事件: ${m.content}]` };
                 }
                 else if (m.hidden === true) {
-                    currentApiMessage = { role: 'system', content: content };
+                    const hiddenContent = typeof content === 'object'
+                        ? describeStructuredMessageForAPI(m)
+                        : content;
+                    currentApiMessage = hiddenContent ? { role: 'system', content: hiddenContent } : null;
                 }
                 else {
                     currentApiMessage = null;
                 }
             }
             else if (typeof content === 'object' && content !== null) {
-                let simplifiedContent = '';
-                switch (content.type) {
-                    case 'sticker': // <--- ▼▼▼ 新增这个 case ▼▼▼
-        simplifiedContent = `[用户发送了表情，表情内容是：“${content.name}”]`;
-        break;
-
-    case 'location': // <--- 这是原来的 case，放在新增的 case 之后
-        simplifiedContent = `[使用者分享了一个位置: ${content.address}]`;
-        break;
-                    case 'voice': simplifiedContent = `[使用者传送了一段语音讯息，内容是: “${content.text}”]`; break;
-                    case 'send_image_text':
-                        simplifiedContent = `[${m.author || 'AI'}发送了一张图片：“${content.text}”]`;
-                        break;
-                    case 'image':
-                        simplifiedContent = `[你发送了一张图片：“${content.text}”]`;
-                        break;
- // ... 在 processHistoryForAPI 函数内部 ...
-case 'transfer':
-case 'send_transfer':
-    // 【核心修正】在这里只生成文本描述，不操作UI
-    let transferText = '';
-    if (m.role === 'user' && content.statusText === '已收款') {
-        transferText = `[系统事件：用户收下了你发送的 ¥${content.amount.toFixed(2)} 转账。]`;
-    } else {
-        const sender = (m.role === 'user') ? '用户' : '你';
-        const action = (m.role === 'user') ? '给你' : '给用户';
-        transferText = `[${sender} ${action}发起了一笔转账，金额为 ¥${content.amount.toFixed(2)}`;
-        if (content.remark) {
-            transferText += `，备注是："${content.remark}"`;
-        }
-        transferText += ']';
-    }
-    simplifiedContent = transferText;
-    break;
-
-case 'purchase_card':
-    // 礼物卡片的格式转换
-    let giftText = '';
-    const giftSender = (m.role === 'user') ? '用户' : '你';
-    const giftRecipient = (m.role === 'user') ? '你' : '用户';
-    
-    if (content.status === 'accepted') {
-        // 已接受
-        giftText = `[${giftRecipient}接受了${giftSender}送的礼物「${content.item}」(¥${content.price})]`;
-    } else if (content.status === 'declined') {
-        // 已退回
-        giftText = `[${giftRecipient}退回了${giftSender}送的礼物「${content.item}」(¥${content.price})]`;
-    } else {
-        // 待处理
-        giftText = `[${giftSender}送了${giftRecipient}一份礼物「${content.item}」(¥${content.price})`;
-        if (content.message) {
-            giftText += `，附言："${content.message}"`;
-        }
-        giftText += '，等待回应]';
-    }
-    simplifiedContent = giftText;
-    break;
-
-case 'forum_share':
-    // 论坛分享卡片的格式转换
-    let forumTypeText = '';
-    if (content.forumType === 'r18') {
-        forumTypeText = 'R18论坛';
-    } else if (content.forumType === 'fanfic') {
-        forumTypeText = '同人文';
-    } else {
-        forumTypeText = '论坛动态';
-    }
-    
-    const forumSender = (m.role === 'user') ? '用户' : '你';
-    
-    // 构建评论区内容（AI需要看到评论详情）
-    let commentsText = '';
-    if (content.comments && content.comments.length > 0) {
-        commentsText = '\n\n【评论区】\n' + content.comments.map((comment, idx) => 
-            `${idx + 1}. ${comment.authorName}：${comment.content || comment.text || ''}${comment.likes ? ` (👍${comment.likes})` : ''}`
-        ).join('\n');
-    }
-    
-    // 处理图片信息（如果有）
-    let imageInfo = '';
-    if (content.image && content.image !== '') {
-        imageInfo = content.image === '[图片]' ? '\n配图：[图片]' : '\n配图：有图片';
-    }
-    
-    simplifiedContent = `[${forumSender}分享了一个${forumTypeText}帖子]\n标题：${content.title}\n作者：${content.authorName || '匿名'}\n内容：${content.content}${imageInfo}\n互动：❤️${content.likes || 0} 💬${content.commentsCount || 0}${commentsText}`;
-    break;
-
-                     case 'moment_post': simplifiedContent = `[${content.author}发布了一条朋友圈动态: "${content.text}", 配图想法: "${content.image}"]`; break;
-                    default: simplifiedContent = `[使用者傳送了一條特殊訊息]`; break;
+                const simplifiedContent = describeStructuredMessageForAPI(m);
+                if (simplifiedContent) {
+                    currentApiMessage = { role: m.role, content: simplifiedContent };
+                } else {
+                    console.warn('[聊天历史] 跳过无法识别的消息类型:', content.type || 'unknown', content);
+                    currentApiMessage = null;
                 }
-                currentApiMessage = { role: m.role, content: simplifiedContent };
             }
             else {
                 let finalContent = content;
@@ -9663,6 +9650,8 @@ case 'forum_share':
     }
     return apiHistory;
 };
+
+window.processHistoryForAPI = processHistoryForAPI;
 
     const sendVideoCallMessage = async () => {
         const input = document.getElementById('videocall-input');
