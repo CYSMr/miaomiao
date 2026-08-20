@@ -5060,6 +5060,35 @@ const isMiniMaxVoiceConfigured = () => {
     return !!(config.enabled && config.apiKey && config.model && config.voiceId);
 };
 
+const populateMiniMaxVoiceSettings = () => {
+    const config = appState.minimaxVoiceConfig || {};
+    const enabledToggle = document.getElementById('minimax-voice-enabled');
+    if (enabledToggle) {
+        enabledToggle.classList.toggle('active', !!config.enabled);
+        enabledToggle.setAttribute('aria-checked', String(!!config.enabled));
+    }
+    const values = {
+        'minimax-voice-region': config.region || 'cn',
+        'minimax-voice-api-key': config.apiKey || '',
+        'minimax-voice-group-id': config.groupId || '',
+        'minimax-voice-model': config.model || 'speech-02-hd',
+        'minimax-voice-id': config.voiceId || ''
+    };
+    Object.entries(values).forEach(([id, value]) => {
+        const input = document.getElementById(id);
+        if (input) input.value = value;
+    });
+};
+
+const readMiniMaxVoiceSettings = () => ({
+    enabled: document.getElementById('minimax-voice-enabled')?.classList.contains('active') || false,
+    region: document.getElementById('minimax-voice-region')?.value || 'cn',
+    apiKey: document.getElementById('minimax-voice-api-key')?.value.trim() || '',
+    groupId: document.getElementById('minimax-voice-group-id')?.value.trim() || '',
+    model: document.getElementById('minimax-voice-model')?.value.trim() || 'speech-02-hd',
+    voiceId: document.getElementById('minimax-voice-id')?.value.trim() || ''
+});
+
 const getMiniMaxVoiceText = (message) => {
     if (!message || !message.content || typeof message.content !== 'object') return '';
     return String(message.content.text || '').trim();
@@ -16614,35 +16643,6 @@ const deletePreset = async () => {
     }
 };
 
-const populateMiniMaxVoiceSettings = () => {
-    const config = appState.minimaxVoiceConfig || {};
-    const enabledToggle = document.getElementById('minimax-voice-enabled');
-    if (enabledToggle) {
-        enabledToggle.classList.toggle('active', !!config.enabled);
-        enabledToggle.setAttribute('aria-checked', String(!!config.enabled));
-    }
-    const values = {
-        'minimax-voice-region': config.region || 'cn',
-        'minimax-voice-api-key': config.apiKey || '',
-        'minimax-voice-group-id': config.groupId || '',
-        'minimax-voice-model': config.model || 'speech-02-hd',
-        'minimax-voice-id': config.voiceId || ''
-    };
-    Object.entries(values).forEach(([id, value]) => {
-        const input = document.getElementById(id);
-        if (input) input.value = value;
-    });
-};
-
-const readMiniMaxVoiceSettings = () => ({
-    enabled: document.getElementById('minimax-voice-enabled')?.classList.contains('active') || false,
-    region: document.getElementById('minimax-voice-region')?.value || 'cn',
-    apiKey: document.getElementById('minimax-voice-api-key')?.value.trim() || '',
-    groupId: document.getElementById('minimax-voice-group-id')?.value.trim() || '',
-    model: document.getElementById('minimax-voice-model')?.value.trim() || 'speech-02-hd',
-    voiceId: document.getElementById('minimax-voice-id')?.value.trim() || ''
-});
-
 // 切换API模式
 const switchApiMode = (mode) => {
     currentApiMode = mode;
@@ -16821,10 +16821,10 @@ document.getElementById('ethical-bypass-toggle').onclick = (e) => {
     promptTextarea.disabled = !e.currentTarget.classList.contains('active');
 };
 
-document.getElementById('minimax-voice-enabled').onclick = (e) => {
+safeSetOnClick('minimax-voice-enabled', (e) => {
     e.currentTarget.classList.toggle('active');
     e.currentTarget.setAttribute('aria-checked', String(e.currentTarget.classList.contains('active')));
-};
+});
 
 document.getElementById('save-chat-settings-btn').onclick = async () => {
     const chat = appState.chats[appState.activeChatId];
