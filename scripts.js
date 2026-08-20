@@ -5049,6 +5049,10 @@ const MINIMAX_VOICE_ENDPOINTS = {
     cn: 'https://api.minimaxi.com/v1/t2a_v2',
     global: 'https://api.minimax.io/v1/t2a_v2'
 };
+const MINIMAX_MODEL_ENDPOINTS = {
+    cn: 'https://api.minimaxi.com/v1/models',
+    global: 'https://api.minimax.io/v1/models'
+};
 const MINIMAX_VOICE_CACHE = 'miaomiao-minimax-voice-v1';
 const MINIMAX_VOICE_UNLOCK_AUDIO = 'data:audio/wav;base64,UklGRigAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQQAAACAgICA';
 let activeMiniMaxVoiceAudio = null;
@@ -5094,6 +5098,52 @@ const readMiniMaxVoiceSettings = () => ({
     model: document.getElementById('minimax-voice-model')?.value.trim() || 'speech-02-hd',
     voiceId: document.getElementById('minimax-voice-id')?.value.trim() || ''
 });
+
+const fetchMiniMaxVoiceModels = async () => {
+    const region = document.getElementById('minimax-voice-region')?.value || 'cn';
+    const apiKey = document.getElementById('minimax-voice-api-key')?.value.trim() || '';
+    const button = document.getElementById('fetch-minimax-models-btn');
+    const modelSelect = document.getElementById('minimax-voice-model-select');
+    if (!apiKey) {
+        alert('请先填写 MiniMax API Key！');
+        return;
+    }
+
+    const originalText = button.textContent;
+    button.disabled = true;
+    button.textContent = '获取中...';
+    try {
+        const response = await fetch(MINIMAX_MODEL_ENDPOINTS[region] || MINIMAX_MODEL_ENDPOINTS.cn, {
+            headers: { 'Authorization': `Bearer ${apiKey}` }
+        });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) {
+            throw new Error(data.error?.message || data.message || `HTTP 错误: ${response.status}`);
+        }
+
+        const modelData = Array.isArray(data.data) ? data.data : (Array.isArray(data.models) ? data.models : []);
+        const models = [...new Set(modelData
+            .map(model => String(model?.id || model?.name || '').trim())
+            .filter(model => model.toLowerCase().includes('speech'))
+        )].sort((a, b) => a.localeCompare(b));
+
+        modelSelect.innerHTML = '<option value="">--- 请选择语音模型 ---</option>';
+        models.forEach(model => {
+            const option = document.createElement('option');
+            option.value = model;
+            option.textContent = model;
+            modelSelect.appendChild(option);
+        });
+        modelSelect.style.display = 'block';
+
+        if (!models.length) alert('接口没有返回可用的语音模型。');
+    } catch (error) {
+        alert(`获取 MiniMax 语音模型失败：${error.message}`);
+    } finally {
+        button.disabled = false;
+        button.textContent = originalText;
+    }
+};
 
 const ensureChatMiniMaxVoiceField = () => {
     let input = document.getElementById('chat-minimax-voice-id');
@@ -16110,6 +16160,10 @@ document.getElementById('import-file-input').addEventListener('change', handleIm
         switchApiMode('primary'); // 默认显示主API
         populateMiniMaxVoiceSettings();
         showScreen('api-settings-screen');
+    });
+    safeSetOnClick('fetch-minimax-models-btn', fetchMiniMaxVoiceModels);
+    document.getElementById('minimax-voice-model-select')?.addEventListener('change', event => {
+        if (event.target.value) document.getElementById('minimax-voice-model').value = event.target.value;
     });
     bindMcpSettingsEvents();
 
