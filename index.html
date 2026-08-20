@@ -1013,12 +1013,19 @@
             <input type="password" id="minimax-voice-api-key" placeholder="开放平台 API Key">
             <label for="minimax-voice-group-id">Group ID（国内版）</label>
             <input type="text" id="minimax-voice-group-id" placeholder="国内版填写，国际版可留空">
-            <label for="minimax-voice-model">语音模型</label>
-            <select id="minimax-voice-model-select" style="display: none; margin-bottom: 8px;">
+            <label for="minimax-voice-model-select">语音模型（已验证）</label>
+            <select id="minimax-voice-model-select" style="margin-bottom: 8px;">
                 <option value="">--- 请选择语音模型 ---</option>
+                <option value="speech-2.8-hd">speech-2.8-hd</option>
+                <option value="speech-2.8-turbo">speech-2.8-turbo</option>
+                <option value="speech-2.6-hd">speech-2.6-hd</option>
+                <option value="speech-2.6-turbo">speech-2.6-turbo</option>
+                <option value="speech-2.5-hd-preview">speech-2.5-hd-preview</option>
+                <option value="speech-2.5-turbo-preview">speech-2.5-turbo-preview</option>
+                <option value="speech-02-hd">speech-02-hd</option>
+                <option value="speech-02-turbo">speech-02-turbo</option>
             </select>
-            <input type="text" id="minimax-voice-model" value="speech-02-hd" placeholder="speech-02-hd">
-            <button type="button" id="fetch-minimax-models-btn" class="fetch-btn">获取语音模型</button>
+            <input type="text" id="minimax-voice-model" value="speech-02-hd" placeholder="也可以手动输入其他模型">
             <label for="minimax-voice-id">默认音色 ID</label>
             <input type="text" id="minimax-voice-id" placeholder="未单独配置的聊天使用此音色">
         </div>
