@@ -87,6 +87,10 @@ const APP_URL = process.env.APP_URL || 'http://127.0.0.1:4183';
             document.body.append(imageProbe, backgroundProbe);
             await window.hydrateImageAssetReferences(document.body);
             const analysis = await window.analyzeStoredData();
+            const hidingStyle = document.createElement('style');
+            hidingStyle.textContent = '#compress-history-images-btn { display: none !important; }';
+            document.head.appendChild(hidingStyle);
+            const analysisButton = document.getElementById('compress-history-images-btn');
 
             return {
                 first,
@@ -116,6 +120,8 @@ const APP_URL = process.env.APP_URL || 'http://127.0.0.1:4183';
                 analysisDiaryRefs: analysis.entries.find(entry => entry.key === KEYS.DIARY_ENTRIES)?.assetRefCount || 0,
                 analysisHasUnlistedKey: analysis.entries.some(entry => entry.key === 'unlisted_storage_probe' && entry.base64AudioCount === 1),
                 analysisIndependentForumRefs: analysis.entries.find(entry => entry.key === 'ForumDatabase/forumState')?.assetRefCount || 0,
+                analysisButtonDisplay: getComputedStyle(analysisButton).display,
+                analysisButtonText: analysisButton.textContent.trim(),
                 migrateButtonText: document.getElementById('image-storage-migrate-btn')?.textContent.trim(),
                 migrateButtonInActionGrid: document.getElementById('image-storage-migrate-btn')?.parentElement?.style.gridTemplateColumns,
                 oldToggleExists: Boolean(document.getElementById('image-storage-optimization-toggle'))
@@ -149,6 +155,8 @@ const APP_URL = process.env.APP_URL || 'http://127.0.0.1:4183';
         assert.ok(result.analysisDiaryRefs >= 1);
         assert.equal(result.analysisHasUnlistedKey, true);
         assert.ok(result.analysisIndependentForumRefs >= 1);
+        assert.notEqual(result.analysisButtonDisplay, 'none');
+        assert.equal(result.analysisButtonText, '查看详细存储占用');
         assert.equal(result.migrateButtonText, '压缩并整理图片');
         assert.equal(result.migrateButtonInActionGrid, '1fr 1fr');
         assert.equal(result.oldToggleExists, false);
