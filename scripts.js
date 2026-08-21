@@ -14394,9 +14394,18 @@ const migrateAllStoredImages = async (onProgress = () => {}) => {
         storedSize: 0,
         failed: 0
     };
+    const migratedSourceCache = new Map();
 
     const migrateValue = async (value, seen = new WeakSet()) => {
         if (typeof value === 'string' && value.startsWith('data:image/')) {
+            const cached = migratedSourceCache.get(value);
+            if (cached) {
+                stats.processed++;
+                stats.deduplicated++;
+                stats.originalSize += cached.originalSize;
+                onProgress({ ...stats });
+                return cached.url;
+            }
             try {
                 const result = await persistImageAsset(value, {
                     maxWidth: 512,
@@ -14407,6 +14416,7 @@ const migrateAllStoredImages = async (onProgress = () => {}) => {
                 stats.originalSize += result.originalSize;
                 stats.storedSize += result.storedSize;
                 if (result.deduplicated) stats.deduplicated++;
+                migratedSourceCache.set(value, { url: result.url, originalSize: result.originalSize });
                 onProgress({ ...stats });
                 return result.url;
             } catch (error) {
@@ -14438,6 +14448,32 @@ const migrateAllStoredImages = async (onProgress = () => {}) => {
         const processedBefore = stats.processed;
         row.value = await migrateValue(row.value);
         if (stats.processed > processedBefore) await db.kvStore.put(row);
+    }
+
+    try {
+        const forumDb = await openForumDB();
+        const readTransaction = forumDb.transaction([FORUM_STORE_NAME], 'readonly');
+        const forumRow = await new Promise((resolve, reject) => {
+            const request = readTransaction.objectStore(FORUM_STORE_NAME).get('forumState');
+            request.onsuccess = () => resolve(request.result);
+            request.onerror = () => reject(request.error);
+        });
+        if (forumRow?.data) {
+            const forumProcessedBefore = stats.processed;
+            forumRow.data = await migrateValue(forumRow.data);
+            if (stats.processed > forumProcessedBefore) {
+                const writeTransaction = forumDb.transaction([FORUM_STORE_NAME], 'readwrite');
+                writeTransaction.objectStore(FORUM_STORE_NAME).put(forumRow);
+                await new Promise((resolve, reject) => {
+                    writeTransaction.oncomplete = resolve;
+                    writeTransaction.onerror = () => reject(writeTransaction.error);
+                    writeTransaction.onabort = () => reject(writeTransaction.error);
+                });
+            }
+        }
+        forumDb.close();
+    } catch (error) {
+        console.warn('论坛独立数据库图片迁移失败:', error);
     }
 
     if (typeof forumState !== 'undefined') {
@@ -14620,7 +14656,7 @@ const clearMomentsData = async () => {
 };
 
 // 压缩历史图片（改为数据分析）
-const compressHistoryImages = async () => {
+const legacyCompressHistoryImages = async () => {
     const btn = document.getElementById('compress-history-images-btn');
     const originalText = btn.textContent;
     
@@ -14735,6 +14771,142 @@ const compressHistoryImages = async () => {
         
         alert(message);
         
+    } catch (error) {
+        console.error('分析失败:', error);
+        alert('分析失败：' + error.message);
+    } finally {
+        btn.disabled = false;
+        btn.textContent = originalText;
+    }
+};
+
+const inspectStoredMediaReferences = value => {
+    const summary = { base64ImageCount: 0, base64ImageSize: 0, assetRefCount: 0, base64AudioCount: 0, base64AudioSize: 0 };
+    const seen = new WeakSet();
+    const visit = current => {
+        if (typeof current === 'string') {
+            if (current.startsWith('data:image/')) {
+                summary.base64ImageCount++;
+                summary.base64ImageSize += current.length;
+            } else if (current.startsWith(IMAGE_ASSET_PREFIX)) {
+                summary.assetRefCount++;
+            } else if (current.startsWith('data:audio/')) {
+                summary.base64AudioCount++;
+                summary.base64AudioSize += current.length;
+            }
+            return;
+        }
+        if (!current || typeof current !== 'object' || current instanceof Blob || seen.has(current)) return;
+        seen.add(current);
+        if (Array.isArray(current)) current.forEach(visit);
+        else Object.values(current).forEach(visit);
+    };
+    visit(value);
+    return summary;
+};
+
+const analyzeStoredData = async () => {
+    const entries = [];
+    await waitForDatabase();
+    const storedRows = await db.kvStore.toArray();
+    for (const row of storedRows) {
+        try {
+            const data = row.value;
+            if (data === undefined || data === null) continue;
+            const serialized = JSON.stringify(data);
+            if (!serialized) continue;
+            entries.push({
+                key: row.key,
+                size: serialized.length,
+                type: Array.isArray(data) ? 'array' : typeof data,
+                ...inspectStoredMediaReferences(data)
+            });
+        } catch (error) {
+            console.error(`读取 ${row.key} 失败:`, error);
+        }
+    }
+
+    try {
+        const forumDb = await openForumDB();
+        const transaction = forumDb.transaction([FORUM_STORE_NAME], 'readonly');
+        const forumRow = await new Promise((resolve, reject) => {
+            const request = transaction.objectStore(FORUM_STORE_NAME).get('forumState');
+            request.onsuccess = () => resolve(request.result);
+            request.onerror = () => reject(request.error);
+        });
+        forumDb.close();
+        if (forumRow?.data) {
+            const serialized = JSON.stringify(forumRow.data);
+            entries.push({
+                key: 'ForumDatabase/forumState',
+                size: serialized.length,
+                type: '论坛独立数据库',
+                ...inspectStoredMediaReferences(forumRow.data)
+            });
+        }
+    } catch (error) {
+        console.warn('读取论坛独立数据库失败:', error);
+    }
+
+    try {
+        const imageAssets = await db.imageAssets.toArray();
+        const size = imageAssets.reduce((sum, asset) => sum + (asset.size || asset.blob?.size || 0), 0);
+        if (imageAssets.length || size) entries.push({
+            key: 'imageAssets',
+            size,
+            type: '独立图片资产',
+            imageAssetCount: imageAssets.length,
+            base64ImageCount: 0,
+            base64ImageSize: 0,
+            assetRefCount: 0,
+            base64AudioCount: 0,
+            base64AudioSize: 0
+        });
+    } catch (error) {
+        console.warn('读取独立图片资产失败:', error);
+    }
+
+    entries.sort((left, right) => right.size - left.size);
+    return { entries, totalSize: entries.reduce((sum, entry) => sum + entry.size, 0) };
+};
+
+window.analyzeStoredData = analyzeStoredData;
+
+const compressHistoryImages = async () => {
+    const btn = document.getElementById('compress-history-images-btn');
+    const originalText = btn.textContent;
+    try {
+        btn.disabled = true;
+        btn.textContent = '正在分析数据...';
+        const analysis = await analyzeStoredData();
+        const displayedEntries = analysis.entries.slice(0, 10);
+        const displayedSize = displayedEntries.reduce((sum, entry) => sum + entry.size, 0);
+        let message = '数据库存储分析（前 10 项）：\n\n';
+        for (const entry of displayedEntries) {
+            message += `${entry.key}: ${(entry.size / 1024 / 1024).toFixed(2)} MB`;
+            const details = [];
+            if (entry.base64ImageCount) details.push(`Base64 图 ${entry.base64ImageCount} 处`);
+            if (entry.assetRefCount) details.push(`图片引用 ${entry.assetRefCount} 处`);
+            if (entry.base64AudioCount) details.push(`Base64 音频 ${entry.base64AudioCount} 处`);
+            if (entry.imageAssetCount) details.push(`独立图片 ${entry.imageAssetCount} 张`);
+            if (details.length) message += `（${details.join('，')}）`;
+            message += '\n';
+        }
+        const remainingCount = analysis.entries.length - displayedEntries.length;
+        if (remainingCount > 0) {
+            const remainingSize = analysis.totalSize - displayedSize;
+            message += `其他 ${remainingCount} 项: ${(remainingSize / 1024 / 1024).toFixed(2)} MB\n`;
+        }
+        message += `\n总计: ${(analysis.totalSize / 1024 / 1024).toFixed(2)} MB`;
+        console.table(analysis.entries.map(entry => ({
+            key: entry.key,
+            MB: (entry.size / 1024 / 1024).toFixed(2),
+            Base64图片: entry.base64ImageCount,
+            图片引用: entry.assetRefCount,
+            Base64音频: entry.base64AudioCount,
+            独立图片: entry.imageAssetCount || 0
+        })));
+        alert(message);
     } catch (error) {
         console.error('分析失败:', error);
         alert('分析失败：' + error.message);
