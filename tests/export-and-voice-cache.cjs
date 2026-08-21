@@ -46,6 +46,7 @@ const APP_URL = process.env.APP_URL || 'http://127.0.0.1:4183';
             });
 
             try {
+                const hasIncrementalJsonParser = typeof window.StreamParserJson?.JSONParser === 'function';
                 const blob = window.createCompactBackupBlob({ greeting: '喵', nested: { ok: true } });
                 const blobText = await blob.text();
                 const deliveryMethod = await window.downloadBackupBlob(blob, 'backup.json');
@@ -96,6 +97,13 @@ const APP_URL = process.env.APP_URL || 'http://127.0.0.1:4183';
                     if (done) break;
                     decompressedBytes += value.byteLength;
                 }
+                let parsedLargeMessageCount = 0;
+                await window.parseTopLevelJsonStream(
+                    largeGzipBlob.stream().pipeThrough(new DecompressionStream('gzip')),
+                    (key, value) => {
+                        if (key === 'chats') parsedLargeMessageCount = value.chat_1.history.length;
+                    }
+                );
                 window.presentBackupSaveBlob(largeGzipBlob, 'AIRP-Backup-large.json.gz');
                 const saveOverlay = document.getElementById('backup-save-overlay');
                 const saveLink = saveOverlay.querySelector('a[download]');
@@ -135,6 +143,7 @@ const APP_URL = process.env.APP_URL || 'http://127.0.0.1:4183';
                 }, 30);
 
                 return {
+                    hasIncrementalJsonParser,
                     blobText,
                     deliveryMethod,
                     initialProgressText,
@@ -148,6 +157,7 @@ const APP_URL = process.env.APP_URL || 'http://127.0.0.1:4183';
                     sharedFiles,
                     largeGzipSize: largeGzipBlob.size,
                     decompressedBytes,
+                    parsedLargeMessageCount,
                     progressUpdateCount: progressUpdates.length,
                     hasDirectDownloadLink: Boolean(saveLink),
                     hasShareButton: Boolean(shareButton),
@@ -165,6 +175,7 @@ const APP_URL = process.env.APP_URL || 'http://127.0.0.1:4183';
         });
 
         assert.equal(result.blobText, '{"greeting":"喵","nested":{"ok":true}}');
+        assert.equal(result.hasIncrementalJsonParser, true, 'large imports need a token-level streaming JSON parser');
         assert.equal(result.deliveryMethod, 'shared');
         assert.equal(result.initialProgressText.includes('300MB'), false, 'export hint must not assume every backup is 300 MB');
         assert.equal(result.importFileAccept, null, 'the iOS file picker must not filter out .json.gz backups');
@@ -185,6 +196,7 @@ const APP_URL = process.env.APP_URL || 'http://127.0.0.1:4183';
         }]);
         assert.equal(result.clickedAnchors.length, 0, 'native file sharing must avoid blob navigation');
         assert.ok(result.decompressedBytes > 300 * 1024 * 1024, 'large backup must stream all 300 MB');
+        assert.equal(result.parsedLargeMessageCount, 10240, 'a 300 MB decompressed chat field must import without whole-field JSON.parse');
         assert.ok(result.largeGzipSize < 5 * 1024 * 1024, 'repeated image payloads must compress below 5 MB');
         assert.ok(result.progressUpdateCount > 50, 'large structured backup must yield progress updates');
         assert.equal(result.hasDirectDownloadLink, false, 'iOS must not offer a blob download that opens as a broken page');

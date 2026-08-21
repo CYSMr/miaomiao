@@ -20945,7 +20945,7 @@ const detectAndMigrateBackupData = (backupData) => {
  * 【增强版】汇入资料函数 - 支持旧版本兼容
  * 读取使用者选择的 JSON 档案，自动检测版本并迁移数据格式，然后写入 key-value 储存。
  */
-const parseTopLevelJsonStream = async (readable, onEntry) => {
+const parseTopLevelJsonStreamLegacy = async (readable, onEntry) => {
     const reader = readable.getReader();
     const decoder = new TextDecoder();
     let phase = 'root';
@@ -21088,6 +21088,28 @@ const parseTopLevelJsonStream = async (readable, onEntry) => {
     }
     await consume(decoder.decode());
     if (!finished) throw new Error('备份 JSON 不完整');
+};
+
+const parseTopLevelJsonStream = async (readable, onEntry) => {
+    const JSONParser = window.StreamParserJson?.JSONParser;
+    if (typeof JSONParser !== 'function') {
+        throw new Error('增量 JSON 解析器未加载');
+    }
+
+    const parser = new JSONParser({
+        paths: ['$.*'],
+        keepStack: false,
+        stringBufferSize: 64 * 1024,
+        numberBufferSize: 0
+    });
+    const reader = readable.pipeThrough(parser).getReader();
+
+    while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        await onEntry(String(value.key), value.value);
+        await new Promise(resolve => setTimeout(resolve, 0));
+    }
 };
 
 window.parseTopLevelJsonStream = parseTopLevelJsonStream;
