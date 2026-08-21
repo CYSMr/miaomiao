@@ -6569,7 +6569,7 @@ const applyCustomCss = (cssCode) => {
 };
 
 // 新增函数：应用自定义图标CSS样式
-const applyCustomIconStyles = () => {
+const applyCustomIconStyles = async () => {
     let iconStyleTag = document.getElementById('custom-icon-styles');
     if (!iconStyleTag) {
         iconStyleTag = document.createElement('style');
@@ -6579,7 +6579,12 @@ const applyCustomIconStyles = () => {
 
     // 构建CSS样式字符串
     let cssCode = '';
-    const customIcons = appState.customIcons;
+    const customIcons = {};
+    await Promise.all(Object.entries(appState.customIcons || {}).map(async ([key, value]) => {
+        customIcons[key] = isImageAssetUrl(value)
+            ? await resolveImageSource(value)
+            : value;
+    }));
 
     // 返回按钮图标
     if (customIcons['icon-back-button']) {
@@ -6830,6 +6835,12 @@ const applyCustomIconStyles = () => {
     // 列表背景
     if (customIcons['icon-list-background']) {
         cssCode += `
+        #hub-page-chat,
+        #hub-page-contacts,
+        #hub-page-me,
+        #chat-list-container,
+        #contacts-list-container,
+        #hub-page-me .list-container,
         [style*="background-color: var(--body-bg)"] {
             background-image: url("${customIcons['icon-list-background']}") !important;
             background-size: cover !important;

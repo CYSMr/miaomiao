@@ -42,9 +42,11 @@ const APP_URL = process.env.APP_URL || 'http://127.0.0.1:4183';
             };
             appState.stickers = [{ url: source, name: '我的红色' }];
             appState.aiStickers = [{ url: source, name: '对方红色' }];
+            appState.customIcons = { 'icon-list-background': source };
             await dbStorage.set(KEYS.CHATS, appState.chats);
             await dbStorage.set(KEYS.STICKERS, appState.stickers);
             await dbStorage.set(KEYS.AI_STICKERS, appState.aiStickers);
+            await dbStorage.set(KEYS.CUSTOM_ICONS, appState.customIcons);
             await dbStorage.set(KEYS.DIARY_ENTRIES, [{ id: 1, avatar: source, content: '日记' }]);
             await dbStorage.set(KEYS.FORUM_DATA, { posts: [{ authorAvatar: source, image: source }] });
             await dbStorage.set(KEYS.HOME_WALLPAPER, source);
@@ -91,7 +93,6 @@ const APP_URL = process.env.APP_URL || 'http://127.0.0.1:4183';
             hidingStyle.textContent = '#compress-history-images-btn { display: none !important; }';
             document.head.appendChild(hidingStyle);
             const analysisButton = document.getElementById('compress-history-images-btn');
-
             return {
                 first,
                 second,
@@ -129,6 +130,18 @@ const APP_URL = process.env.APP_URL || 'http://127.0.0.1:4183';
             };
         });
 
+        await page.reload({ waitUntil: 'domcontentloaded' });
+        await page.waitForFunction(() => typeof db !== 'undefined' && db?.isOpen?.());
+        await page.waitForFunction(() => appState.customIcons?.['icon-list-background']);
+        await page.waitForFunction(() => document.getElementById('custom-icon-styles')?.textContent.includes('blob:'));
+        const reloadedStyle = await page.evaluate(() => {
+            const listBackground = document.getElementById('chat-list-container');
+            return {
+                asset: appState.customIcons['icon-list-background'],
+                rendered: getComputedStyle(listBackground).backgroundImage
+            };
+        });
+
         assert.match(result.first, /^asset:\/\//);
         assert.equal(result.first, result.second);
         assert.equal(result.rowsAfterDuplicate, 1);
@@ -145,6 +158,8 @@ const APP_URL = process.env.APP_URL || 'http://127.0.0.1:4183';
         assert.equal(result.independentForumAvatar, result.first);
         assert.equal(result.independentForumImage, result.first);
         assert.equal(result.homeWallpaper, result.first);
+        assert.equal(reloadedStyle.asset, result.first);
+        assert.match(reloadedStyle.rendered, /blob:/);
         assert.ok(result.rowCount >= 2);
         assert.equal(result.migration.failed, 0);
         assert.match(result.apiUrl, /^data:image\/webp;base64,/);
