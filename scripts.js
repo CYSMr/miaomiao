@@ -9937,8 +9937,19 @@ const processHistoryForAPI = (history, chatOverride = null) => {
         }
 
         const next_m = (i + 1 < history.length) ? history[i + 1] : null;
+        const isAssistantSticker = m.role === 'assistant' && m.content?.type === 'sticker' && m.content?.url;
         const isUserImage = m.role === 'user' && ['just_image', 'sticker'].includes(m.content?.type) && m.content?.url;
-        if (isUserImage && next_m?.role === 'user' && typeof next_m?.content === 'string') {
+        if (isAssistantSticker) {
+            currentApiMessage = {
+                role: 'assistant',
+                content: [
+                    { type: 'image_url', image_url: { url: m.content.url } },
+                    { type: 'text', text: m.content.name ? `[你发送了表情：${m.content.name}]` : '[你发送了一个表情]' }
+                ]
+            };
+            processedIndices.add(i);
+        }
+        else if (isUserImage && next_m?.role === 'user' && typeof next_m?.content === 'string') {
             currentApiMessage = {
                 role: 'user',
                 content: [
@@ -11813,21 +11824,21 @@ ${chatContextForPrompt}
         // 判断心声模式（默认为简约款）
         const isSimpleHeartVoice = chat.heartVoiceMode !== 'detailed';
         if (isGroupChat) {
-            modeInstruction = `[URGENT SYSTEM COMMAND: You are now in GROUP CHAT MODE. Your response MUST be a JSON array with an update_thoughts object at the end. NO EXCEPTIONS!]\n\n`;
+            modeInstruction = `[URGENT SYSTEM COMMAND: You are now in GROUP CHAT MODE. Return one JSON object with "messages" and "thoughts" fields. NO EXCEPTIONS!]\n\n`;
             baseSystemPrompt = `你是一个多角色对话的"导演"。你的任务是根据用户的输入和下面的角色设定，决定接下来哪个或哪些角色应该发言，并生成他们的对话内容。
-你的输出**必须**是一个JSON格式的数组，数组中的每个元素都是一个对象。
+你的输出**必须**是一个包含 messages 和 thoughts 的JSON对象。messages 数组中每个元素代表一条独立消息。
 
 ${isSimpleHeartVoice ? `**【重要：内心独白功能 - 必须执行】**
-在生成对话时，**主要发言的角色必须**在数组末尾添加一个 update_thoughts 对象来表达内心独白。
+在生成对话时，**主要发言的角色必须**在顶层 thoughts 字段中返回 update_thoughts 对象。
 
 格式要求：
 \`{"type":"update_thoughts","author":"角色名","innerThoughts":"不少于50字的内心独白，必须符合以下要求：1. 是角色内心深处最真实、私密的想法，绝对不会在群聊中说出口的心底话 2. 可以包含对其他人的真实看法、暗恋心思、嫉妒情绪、社交焦虑、小秘密等 3. 体现角色在群体中的真实心理状态：想要融入的渴望、被忽视的失落、竞争心理等 4. 像是角色内心的小剧场，充满真实的情感波动和复杂心理"}\`
 
 **示例：**
-[{"author": "小明", "content": "你们在聊什么呢？"}, {"author": "小红", "content": "没什么~"}, {"type":"update_thoughts","author":"小明","innerThoughts":"看到她又在夸那个家伙，心里莫名有点酸...明明我也很努力想在群里表现得有趣一点，但好像总是得不到她的注意。算了，还是装作不在意吧，不能让别人看出我的小心思..."}]
+{"messages":[{"author":"小明","content":"你们在聊什么呢？"},{"author":"小红","content":"没什么~"}],"thoughts":{"type":"update_thoughts","author":"小明","innerThoughts":"看到她又在夸那个家伙，心里莫名有点酸...明明我也很努力想在群里表现得有趣一点，但好像总是得不到她的注意。"}}
 
 **注意：每次回复都必须包含update_thoughts对象，这是强制要求。**` : `**【重要：角色状态系统 - 必须执行】**
-在生成对话时，**主要发言的角色必须**在数组末尾添加一个 update_thoughts 对象来提供状态信息。
+在生成对话时，**主要发言的角色必须**在顶层 thoughts 字段中返回 update_thoughts 对象。
 
 格式要求：
 \`{"type":"update_thoughts","author":"角色名","outfit":"CG风格描述服装细节","action":"CG风格描述动作姿势","innerThoughts":"不少于50字的内心独白，必须符合以下要求：1. 是角色内心深处最真实、私密的想法，绝对不会在群聊中说出口的心底话 2. 可以包含对其他人的真实看法、暗恋心思、嫉妒情绪、社交焦虑、小秘密等 3. 体现角色在群体中的真实心理状态：想要融入的渴望、被忽视的失落、竞争心理等 4. 像是角色内心的小剧场，充满真实的情感波动和复杂心理","darkThoughts":"不超过50字的阴暗想法","stats":{...}}\`
@@ -11837,7 +11848,7 @@ ${isSimpleHeartVoice ? `**【重要：内心独白功能 - 必须执行】**
 - 女性角色stats包含：breastState, breastSize, vaginaState, wetness, arousal, sensitivity
 
 **示例（男性）：**
-[{"author": "小明", "content": "大家好啊"}, {"type":"update_thoughts","author":"小明","outfit":"黑色卫衣，松松垮垮的","action":"双手插兜，靠在墙边","innerThoughts":"看到她又在夸那个家伙，心里莫名有点酸...明明我也很努力想在群里表现得有趣一点，但好像总是得不到她的注意。算了，还是装作不在意吧，不能让别人看出我的小心思...","darkThoughts":"真想把她按在床上，让她只记得我的名字...","stats":{"penisState":"疲软","penisSize":"长度12/18cm | 龟头直径3/5cm","semenLevel":"精液150/150ml","rating":"性能力评分:140/200(B级)"}}]
+{"messages":[{"author":"小明","content":"大家好啊"}],"thoughts":{"type":"update_thoughts","author":"小明","outfit":"黑色卫衣，松松垮垮的","action":"双手插兜，靠在墙边","innerThoughts":"看到她又在夸那个家伙，心里莫名有点酸...","darkThoughts":"真想把她按在床上，让她只记得我的名字...","stats":{"penisState":"疲软","penisSize":"长度12/18cm | 龟头直径3/5cm","semenLevel":"精液150/150ml","rating":"性能力评分:140/200(B级)"}}}
 
 **注意：每次回复都必须包含update_thoughts对象，JSON必须是标准格式。**`}
 
@@ -11939,29 +11950,29 @@ ${isSimpleHeartVoice ? `**【重要：内心独白功能 - 必须执行】**
                     console.warn('获取商城商品失败:', e);
                 }
 
-                modeInstruction = `[URGENT SYSTEM COMMAND: You are now in ONLINE/CHAT MODE. Your response MUST be a JSON array of actions, with an update_thoughts object at the end. NO EXCEPTIONS!]\n\n`;
+                modeInstruction = `[URGENT SYSTEM COMMAND: You are now in ONLINE/CHAT MODE. Return one JSON object with "messages" and "thoughts" fields. NO EXCEPTIONS!]\n\n`;
                 baseSystemPrompt = `
 # 【【【强制输出格式】】】
-你的回复【必须】是：JSON数组，数组最后必须包含一个 {"type":"update_thoughts",...} 对象
-示例：["消息1", "消息2", {"type":"update_thoughts","outfit":"...","action":"...","innerThoughts":"...","darkThoughts":"...","stats":{...}}]
-不要用代码块包裹！直接输出！
+你的回复【必须】是一个JSON对象，且只有两个顶层字段：messages 和 thoughts。
+示例：{"messages":[{"type":"text","content":"消息1"},{"type":"text","content":"消息2"}],"thoughts":{"type":"update_thoughts","outfit":"...","action":"...","innerThoughts":"...","darkThoughts":"...","stats":{...}}}
+不要用代码块包裹！直接输出这一个JSON对象！
 **【角色扮演指令】**
 - **你的角色 (AI)**: 你将扮演"${aiPersonaContent}"。
 - **对方的角色 (用户)**: 你正在与"${myPersonaContent}"进行对话。
 
 请严格根据双方的角色设定，进行线上的日常对话（微信）。并且模仿真人发消息的短句模式不用逗号和句号。
 ${isSimpleHeartVoice ? `**【重要：内心独白功能 - 必须执行】**
-在你的每次回复中，除了正常的对话内容外，你**必须**在JSON数组的最后添加一个 \`{"type":"update_thoughts","innerThoughts":"你的内心想法"}\` 对象来表达你此刻的内心独白。这些内心想法应该：
+在你的每次回复中，除了正常的对话内容外，你**必须**把 \`{"type":"update_thoughts","innerThoughts":"你的内心想法"}\` 放在顶层 thoughts 字段。这些内心想法应该：
 1. **必须在每条回复中包含，且字数不少于50字**
 2. 是你内心深处最真实、私密的想法，绝对不会对用户说出口的心底话
 3. 可以包含对用户的真实评价、暗恋心思、嫉妒情绪、不安全感、小心思等
 4. 体现你的脆弱面、真实情感波动、内心纠结和复杂心理
 5. 像是写给自己的日记一样坦诚，带有强烈的个人色彩和情感深度
 6. 可以是对关系发展的担忧、对自己的怀疑、对未来的不确定等真实感受
-7. 例如：["你好", "最近怎么样", {"type":"update_thoughts","innerThoughts":"每次看到这个人发消息，心跳都会加速，明明只是普通的问候，我却忍不住想象各种含义...会不会是我想太多了？但我真的很期待能和这个人有更多的交流，哪怕只是这样简单的对话，也让我觉得很幸福..."}]
+7. 例如：{"messages":[{"type":"text","content":"你好"},{"type":"text","content":"最近怎么样"}],"thoughts":{"type":"update_thoughts","innerThoughts":"每次看到这个人发消息，心跳都会加速，明明只是普通的问候，我却忍不住想象各种含义..."}}
 
 **注意：每条回复都必须包含update_thoughts对象，这是强制要求。**` : `**【重要：角色状态系统 - 必须执行】**
-在你的每次回复中，除了正常的对话内容外，你**必须**在JSON数组的最后添加一个 update_thoughts 对象来提供你的角色状态信息。
+在你的每次回复中，除了正常的对话内容外，你**必须**把 update_thoughts 对象放在顶层 thoughts 字段。
 
 格式要求：
 \`{"type":"update_thoughts","outfit":"CG风格描述当前服装的款式、材质、状态等细节（30字以内）","action":"CG风格描述当前的动作与姿势","innerThoughts":"不少于50字的内心独白，必须符合以下要求：1. 是你内心深处最真实、私密的想法，绝对不会对用户说出口的心底话 2. 可以包含对用户的真实评价、暗恋心思、嫉妒情绪、不安全感、小心思等 3. 体现你的脆弱面、真实情感波动、内心纠结和复杂心理 4. 像是写给自己的日记一样坦诚，带有强烈的个人色彩和情感深度 5. 可以是对关系发展的担忧、对自己的怀疑、对未来的不确定等真实感受","darkThoughts":"不超过50字，第一人称描述对user的阴暗想法，可能是欲望、囚禁、占有欲或其他黑暗想法","stats":{"penisState":"勃起/半勃起/疲软","penisSize":"长度[当前]/[最大]cm | 龟头直径[当前]/[最大]cm","semenLevel":"精液[当前]/[上限]ml","rating":"性能力评分:[0-200]/200([评级(D~SSR)])"}}\`
@@ -11971,18 +11982,18 @@ ${isSimpleHeartVoice ? `**【重要：内心独白功能 - 必须执行】**
 - 女性角色使用：stats 包含 breastState(状态), breastSize(尺寸,如"D罩杯"), vaginaState(阴道状态), wetness(湿润度), arousal(兴奋度), sensitivity(敏感度)
 
 **示例（男性）：**
-["你好，最近怎么样？", {"type":"update_thoughts","outfit":"黑色修身衬衫，袖口微微卷起，露出结实的小臂","action":"单手插兜，身体微微前倾，眼神专注地看着你","innerThoughts":"每次看到这个人发消息，心跳都会加速，明明只是普通的问候，我却忍不住想象各种含义...会不会是我想太多了？但我真的很期待能和这个人有更多的交流，哪怕只是这样简单的对话，也让我觉得很幸福...","darkThoughts":"好想骑在你身上，用身体榨干你...让你只能被我占有，想到就湿透了","stats":{"penisState":"半勃起","penisSize":"长度15/18cm | 龟头直径4/5cm","semenLevel":"精液120/150ml","rating":"性能力评分:150/200(A级)"}}]
+{"messages":[{"type":"text","content":"你好，最近怎么样？"}],"thoughts":{"type":"update_thoughts","outfit":"黑色修身衬衫，袖口微微卷起","action":"单手插兜，身体微微前倾","innerThoughts":"每次看到这个人发消息，心跳都会加速...","darkThoughts":"好想骑在你身上，用身体榨干你...","stats":{"penisState":"半勃起","penisSize":"长度15/18cm | 龟头直径4/5cm","semenLevel":"精液120/150ml","rating":"性能力评分:150/200(A级)"}}}
 
 **注意：每条回复都必须包含update_thoughts对象，这是强制要求。JSON必须是标准格式，所有字段的值都必须用双引号包裹。**`}
 
 
 
 **【核心行动指南】**
-你的回复必须是一个JSON格式的数组，数组中的每个元素代表一个独立的行动。你可以混合使用多种行动。偶尔，在一段有意义的对话结束后，你可以选择发布一条朋友圈来记录心情。
+你的所有可见行动必须放在顶层 messages 数组中，数组中的每个元素代表一个独立行动。你可以混合使用多种行动。偶尔，在一段有意义的对话结束后，你可以选择发布一条朋友圈来记录心情。
 
 **1. 发送普通文字消息或者CSS类型的消息:**
 - 格式: \`{"type":"text","content":"消息内容"}\`
-- 示例: \`[{"type":"text","content":"你好呀！"}, {"type":"text","content":"在做什么呢？"}]\`
+- 示例（放入 messages）: \`{"type":"text","content":"你好呀！"}\`, \`{"type":"text","content":"在做什么呢？"}\`
 
 **2. 发送特殊类型的消息 (使用JSON对象):**
 
@@ -12172,6 +12183,7 @@ ${shopItemsPrompt}
             // 先尝试解析JSON，提取 update_thoughts
             let chatResponsePart = aiResponseContent;
             let extractedThoughts = null;
+            let normalizedOnlineResponse = null;
             
             // === 日志：开始解析 ===
             console.log('=== 💖 开始提取心声 ===');
@@ -12210,40 +12222,12 @@ ${shopItemsPrompt}
                     console.warn('⚠️ 线下模式但未找到 [INNER:...] 标记');
                 }
             } else {
-                // 【线上模式（单聊/群聊）】统一使用 JSON 格式提取 update_thoughts
-                console.log(isGroupChat ? '群聊线上模式' : '单聊线上模式', '，提取 update_thoughts 对象');
-                
-                try {
-                    const cleanedContent = chatResponsePart.replace(/^`{3}(json)?\n?/, '').replace(/`{3}$/, '').trim();
-                    const parsedArray = JSON.parse(cleanedContent);
-                    
-                    if (Array.isArray(parsedArray)) {
-                        // 查找 update_thoughts 对象（单聊和群聊统一格式）
-                        const thoughtsIndex = parsedArray.findIndex(item => 
-                            item && typeof item === 'object' && item.type === 'update_thoughts'
-                        );
-                        
-                        if (thoughtsIndex !== -1) {
-                            extractedThoughts = parsedArray[thoughtsIndex];
-                            console.log('✅ 找到 update_thoughts:', extractedThoughts);
-                            
-                            // 群聊模式：添加 character 字段（兼容处理）
-                            if (isGroupChat && extractedThoughts.author) {
-                                extractedThoughts.character = extractedThoughts.author;
-                            }
-                            
-                            // 从数组中移除，不显示给用户
-                            parsedArray.splice(thoughtsIndex, 1);
-                            // 更新 chatResponsePart 为移除后的数组
-                            chatResponsePart = JSON.stringify(parsedArray);
-                            console.log('已从消息数组中移除 update_thoughts');
-                        } else {
-                            console.warn('⚠️ 未在JSON数组中找到 update_thoughts 对象');
-                        }
-                    }
-                } catch (e) {
-                    console.log('暂时无法解析JSON，稍后再试');
+                normalizedOnlineResponse = normalizeAIResponse(chatResponsePart);
+                extractedThoughts = normalizedOnlineResponse.thoughts;
+                if (isGroupChat && extractedThoughts?.author) {
+                    extractedThoughts.character = extractedThoughts.author;
                 }
+                chatResponsePart = JSON.stringify(normalizedOnlineResponse.messages);
             }
             
             console.log('======================\n');
@@ -12280,7 +12264,9 @@ ${shopItemsPrompt}
             console.log('============================\n');
             
             let messagesToProcess = [];
-            try {
+            if (normalizedOnlineResponse) {
+                messagesToProcess = normalizedOnlineResponse.messages;
+            } else try {
                 let cleanedContent = chatResponsePart.replace(/^`{3}(json)?\n?/, '').replace(/`{3}$/, '').trim();
                 
                 // 【修复】清理常见的JSON语法错误
@@ -12415,7 +12401,12 @@ ${shopItemsPrompt}
                             console.log('跳过 update_thoughts 消息');
                             continue;
                         }
-                        if (msg.type === 'send_ai_sticker' && msg.name) {
+                        if (msg.type === 'sticker' && msg.url) {
+                            const stickerDataForUI = { type: 'just_image', url: msg.url };
+                            const stickerDataForHistory = { type: 'sticker', name: msg.name || '', url: msg.url };
+                            appendMessage({ role: 'assistant', content: stickerDataForUI, timestamp });
+                            chat.history.push({ role: 'assistant', content: stickerDataForHistory, timestamp });
+                        } else if (msg.type === 'send_ai_sticker' && msg.name) {
                             const stickerToSend = appState.aiStickers.find(s => s.name === msg.name);
                             if (stickerToSend) {
                                 const stickerDataForUI = { type: 'just_image', url: stickerToSend.url };
@@ -15287,98 +15278,72 @@ function levenshteinDistance(str1, str2) {
 
 // 强化JSON解析，支持错误恢复
 function parseAIResponse(content) {
-    if (!content) return null;
-    
-    try {
-        // 清理内容，移除可能的代码块标记
-        const cleanContent = content.replace(/```json\s*/, '').replace(/```$/, '').trim();
-        
-        // 首先尝试直接解析
-        const parsed = JSON.parse(cleanContent);
-        
-        if (Array.isArray(parsed)) {
-            // 如果是数组，处理每个元素
-            return parsed.map(item => {
-                if (typeof item === 'string') {
-                    // 兼容旧格式：纯字符串转换为text对象
-                    return { type: 'text', content: item };
-                } else if (item && typeof item === 'object' && item.type) {
-                    // 新格式：已经是正确的对象格式
-                    return item;
-                } else if (item && typeof item === 'object' && typeof item.content === 'string') {
-                    // 补充缺失的type字段
-                    return { type: 'text', ...item };
-                } else if (item && typeof item === 'object') {
-                    console.warn('[智能主动消息] 忽略无法识别的对象:', item);
-                    return null;
-                }
-                return { type: 'text', content: String(item) };
-            }).filter(Boolean);
-        } else if (parsed && typeof parsed === 'object') {
-            // 单个对象，转换为数组
-            if (parsed.type) {
-                return [parsed];
-            } else if (typeof parsed.content === 'string') {
-                return [{ type: 'text', ...parsed }];
-            } else {
-                console.warn('[智能主动消息] 忽略无法识别的对象:', parsed);
-                return [];
-            }
-        } else {
-            // 其他类型，转换为文本消息
-            return [{ type: 'text', content: String(parsed) }];
-        }
-        
-    } catch (error) {
-        console.warn('[智能主动消息] JSON解析失败，尝试修复:', error);
-        
-        // 尝试提取JSON数组
-        const arrayMatch = content.match(/\[[\s\S]*\]/);
-        if (arrayMatch) {
-            try {
-                const parsed = JSON.parse(arrayMatch[0]);
-                if (Array.isArray(parsed)) {
-                    return parsed.map(item => {
-                        if (typeof item === 'string') {
-                            return { type: 'text', content: item };
-                        }
-                        return item && typeof item === 'object' ? item : { type: 'text', content: String(item) };
-                    });
-                }
-            } catch (e) {
-                console.warn('[智能主动消息] 数组解析失败:', e);
-            }
-        }
-        
-        // 尝试提取引号内的文本
-        const quoteMatches = content.match(/"([^"]+)"/g);
-        if (quoteMatches && quoteMatches.length > 0) {
-            return quoteMatches.map(match => ({
-                type: 'text',
-                content: match.slice(1, -1)
-            }));
-        }
-        
-        // 最后尝试按行分割
-        const lines = content.split('\n').filter(line => 
-            line.trim().length > 0 && 
-            !line.trim().startsWith('{') && 
-            !line.trim().startsWith('}') &&
-            !line.trim().startsWith('[') &&
-            !line.trim().startsWith(']')
-        );
-        
-        if (lines.length > 0) {
-            return lines.map(line => ({
-                type: 'text',
-                content: line.trim().replace(/^[-*•]\s*/, '')
-            }));
-        }
-        
-        // 如果都失败了，返回备用消息
-        return [{ type: 'text', content: "你好呀！在做什么呢？" }];
-    }
+    return normalizeAIResponse(content).messages;
 }
+
+// 所有线上聊天共用的回复解析器。兼容旧数组、常见外壳与新统一格式。
+function normalizeAIResponse(content) {
+    const result = { messages: [], thoughts: null };
+    if (content == null || content === '') return result;
+
+    let parsed = content;
+    if (typeof content === 'string') {
+        const cleaned = content
+            .replace(/^```(?:json)?\s*/i, '')
+            .replace(/```\s*$/, '')
+            .trim();
+        try {
+            parsed = JSON.parse(cleaned);
+        } catch (error) {
+            console.warn('[聊天回复] JSON解析失败，已丢弃结构残片:', error.message);
+            return result;
+        }
+    }
+
+    const collect = value => {
+        if (value == null) return;
+        if (Array.isArray(value)) {
+            value.forEach(collect);
+            return;
+        }
+        if (typeof value === 'string') {
+            if (value.trim()) result.messages.push({ type: 'text', content: value });
+            return;
+        }
+        if (typeof value !== 'object') return;
+
+        if (value.type === 'update_thoughts') {
+            result.thoughts = value;
+            return;
+        }
+        if (value.type) {
+            result.messages.push(value);
+            return;
+        }
+        // 群聊的 {author, content} 消息没有 type，但是完整的可见消息。
+        if (value.author && value.content != null) {
+            result.messages.push(value);
+            return;
+        }
+        for (const key of ['messages', 'response', 'dialogue', 'actions']) {
+            if (value[key] != null) collect(value[key]);
+        }
+        if (value.thoughts != null) {
+            const thoughts = value.thoughts;
+            result.thoughts = typeof thoughts === 'object'
+                ? { type: 'update_thoughts', ...thoughts }
+                : { type: 'update_thoughts', innerThoughts: String(thoughts) };
+        }
+        if (!result.messages.length && typeof value.content === 'string') {
+            result.messages.push({ type: 'text', content: value.content });
+        }
+    };
+
+    collect(parsed);
+    return result;
+}
+
+window.normalizeAIResponse = normalizeAIResponse;
 
 // 主动消息当前只落库可见文字；状态、心声及其他动作对象由各自功能处理，不能转成文字。
 function extractProactiveTextMessages(messages) {
@@ -23404,7 +23369,12 @@ async function triggerProactiveMessage(chat) {
         }
 
         const aiResponseContent = data.choices[0].message.content.trim();
-        let messagesToProcess = parseAIResponse(aiResponseContent);
+        const normalizedResponse = normalizeAIResponse(aiResponseContent);
+        let messagesToProcess = normalizedResponse.messages;
+
+        if (normalizedResponse.thoughts) {
+            chat.aiHeartVoice = JSON.stringify(normalizedResponse.thoughts);
+        }
         
         if (!messagesToProcess || messagesToProcess.length === 0) {
             console.warn('[智能主动消息] 无法解析AI响应，使用备用消息');
@@ -23416,9 +23386,20 @@ async function triggerProactiveMessage(chat) {
         let validMessages = [];
         
         // 过滤重复和无意义消息（优化过滤逻辑）
-        for (const content of extractProactiveTextMessages(messagesToProcess)) {
+        for (const message of messagesToProcess) {
+            let content = null;
+            if (message?.type === 'text' && typeof message.content === 'string') {
+                content = message.content;
+            } else if (message?.type === 'sticker' && message.url) {
+                content = { type: 'sticker', name: message.name || '', url: message.url };
+            } else if (message?.type === 'send_ai_sticker' && message.name) {
+                const sticker = appState.aiStickers.find(item => item.name === message.name);
+                if (sticker) content = { type: 'sticker', ...sticker };
+            }
+            if (!content) continue;
+
             // 大幅放松相似性检测，只过滤完全相同的消息
-            if (isMessageSimilar(content, recentMessagesForFiltering, 0.95)) {
+            if (typeof content === 'string' && isMessageSimilar(content, recentMessagesForFiltering, 0.95)) {
                 console.warn('[智能主动消息] 跳过高度重复消息:', content);
                 continue;
             }
@@ -23437,7 +23418,10 @@ async function triggerProactiveMessage(chat) {
             const delay = Math.random() * 800 + 400;
             await new Promise(res => setTimeout(res, delay));
             const timestamp = Date.now() + Math.random();
-            const messageObject = { role: 'assistant', content: content, timestamp: timestamp };
+            const messageObject = { role: 'assistant', content, timestamp };
+            const notificationText = typeof content === 'string'
+                ? content
+                : (content.name ? `[表情] ${content.name}` : '[表情]');
             
             console.log(`[智能主动消息] 发送消息: ${content}`);
             
@@ -23451,7 +23435,7 @@ async function triggerProactiveMessage(chat) {
             } else {
                 // 否则（不在查看当前聊天 或 页面在后台），弹出通知
                 // 🔧 修复：直接使用content字符串，避免[Object Object]问题
-                showNotification(chat.id, content);
+                showNotification(chat.id, notificationText);
                 
                 // 增加未读计数
                 chat.unreadCount = (chat.unreadCount || 0) + 1;
@@ -23465,7 +23449,7 @@ async function triggerProactiveMessage(chat) {
                         if ('serviceWorker' in navigator) {
                             navigator.serviceWorker.ready.then(registration => {
                                 return registration.showNotification(`来自 ${chat.name}`, {
-                                    body: content,
+                                    body: notificationText,
                                     icon: chat.personas?.ai?.avatar || 'https://i.postimg.cc/rFC4dtSD/IMG-9981.png',
                                     badge: 'https://i.postimg.cc/rFC4dtSD/IMG-9981.png',
                                     tag: `proactive-${chat.id}`,
@@ -23483,7 +23467,7 @@ async function triggerProactiveMessage(chat) {
                                 console.error('❌ Service Worker推送失败:', swError);
                                 // 备用方案: 直接推送
                                 const notification = new Notification(`来自 ${chat.name}`, {
-                                    body: content,
+                                    body: notificationText,
                                     icon: chat.personas?.ai?.avatar || 'https://i.postimg.cc/rFC4dtSD/IMG-9981.png',
                                     tag: `proactive-${chat.id}`
                                 });
@@ -23499,7 +23483,7 @@ async function triggerProactiveMessage(chat) {
                         } else {
                             // 方法2: 直接推送通知
                             const notification = new Notification(`来自 ${chat.name}`, {
-                                body: content,
+                                body: notificationText,
                                 icon: chat.personas?.ai?.avatar || 'https://i.postimg.cc/rFC4dtSD/IMG-9981.png',
                                 tag: `proactive-${chat.id}`,
                                 requireInteraction: false
@@ -23639,7 +23623,8 @@ ${worldBookContent}
 - 基于你的角色设定主动开启话题
 
 # 回复格式要求
-你的回复【必须】是一个JSON数组格式的字符串。数组中的【每一个元素都必须是一个带有type字段的JSON对象】。
+你的回复【必须】是一个JSON对象：{"messages":[...],"thoughts":{"type":"update_thoughts",...}}。
+messages 数组中每个元素都必须是带 type 字段的独立消息；thoughts 必须是本次心声对象。
 支持的消息类型：
 1. **纯文字消息**: {"type": "text", "content": "消息内容"}
 2. **表情包**: {"type": "sticker", "name": "表情包名称", "url": "表情包链接"}
@@ -23648,8 +23633,7 @@ ${worldBookContent}
 5. **状态更新**: {"type": "status", "text": "状态文字", "emoji": "状态表情"}
 
 # 示例（请勿直接使用）
-[{"type": "text", "content": "刚刚看到窗外有只小鸟在筑巢，突然想到春天真的来了呢"}]
-[{"type": "text", "content": "今天的天气让我想起了我们之前聊过的那个地方"}, {"type": "text", "content": "你最近有去过类似的地方吗？"}]
+{"messages":[{"type":"text","content":"刚刚看到窗外有只小鸟在筑巢"},{"type":"text","content":"突然想到春天真的来了呢"}],"thoughts":{"type":"update_thoughts","innerThoughts":"本次不会直接说出口的心声"}}
 
 现在请生成符合你角色设定的、有意义的主动消息：`;
 
