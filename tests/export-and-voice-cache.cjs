@@ -46,10 +46,16 @@ const APP_URL = process.env.APP_URL || 'http://127.0.0.1:4183';
                 const blobText = await blob.text();
                 const deliveryMethod = await window.downloadBackupBlob(blob, 'backup.json');
 
-                const oneMegabyteImagePayload = 'A'.repeat(1024 * 1024);
+                const repeatedStickerPayload = `data:image/webp;base64,${'A'.repeat(30 * 1024)}`;
+                const realisticChatHistory = Array.from({ length: 10240 }, (_, index) => ({
+                    role: index % 2 ? 'assistant' : 'user',
+                    content: { type: 'sticker', url: repeatedStickerPayload, name: `sticker-${index % 20}` },
+                    timestamp: 1700000000000 + index
+                }));
+                const progressUpdates = [];
                 const largeGzipBlob = await window.createStreamingJsonGzipBlob([
-                    ['images', Array(300).fill(oneMegabyteImagePayload)]
-                ]);
+                    ['chats', { chat_1: { history: realisticChatHistory } }]
+                ], processed => progressUpdates.push(processed));
                 const decompressedReader = largeGzipBlob.stream()
                     .pipeThrough(new DecompressionStream('gzip'))
                     .getReader();
@@ -95,6 +101,7 @@ const APP_URL = process.env.APP_URL || 'http://127.0.0.1:4183';
                     sharedFiles,
                     largeGzipSize: largeGzipBlob.size,
                     decompressedBytes,
+                    progressUpdateCount: progressUpdates.length,
                     saveLinkDownload: saveLink.download,
                     saveLinkTarget: saveLink.target,
                     hasShareButton: Array.from(saveOverlay.querySelectorAll('button'))
@@ -120,7 +127,8 @@ const APP_URL = process.env.APP_URL || 'http://127.0.0.1:4183';
         }]);
         assert.equal(result.clickedAnchors.length, 0, 'native file sharing must avoid blob navigation');
         assert.ok(result.decompressedBytes > 300 * 1024 * 1024, 'large backup must stream all 300 MB');
-        assert.ok(result.largeGzipSize < 1024 * 1024, 'repeated image payloads must compress below 1 MB');
+        assert.ok(result.largeGzipSize < 5 * 1024 * 1024, 'repeated image payloads must compress below 5 MB');
+        assert.ok(result.progressUpdateCount > 50, 'large structured backup must yield progress updates');
         assert.equal(result.saveLinkDownload, 'AIRP-Backup-large.json.gz');
         assert.equal(result.saveLinkTarget, '', 'save link must not replace the PWA page');
         assert.equal(result.hasShareButton, true, 'prepared backup must require a fresh user tap for iOS sharing');

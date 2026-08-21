@@ -20290,7 +20290,7 @@ const createCompactBackupBlob = (backupData) => {
     return new Blob(parts, { type: 'application/json' });
 };
 
-const createStreamingJsonGzipBlob = async (entries) => {
+const createStreamingJsonGzipBlob = async (entries, onProgress = null) => {
     if (typeof CompressionStream !== 'function') throw new Error('当前浏览器不支持流式压缩');
 
     const compression = new CompressionStream('gzip');
@@ -20301,7 +20301,10 @@ const createStreamingJsonGzipBlob = async (entries) => {
     const encoder = new TextEncoder();
     const bufferedParts = [];
     let bufferedLength = 0;
+    let processedLength = 0;
+    let lastUiYieldLength = 0;
     const BUFFER_LIMIT = 256 * 1024;
+    const UI_YIELD_INTERVAL = 4 * 1024 * 1024;
 
     const flush = async () => {
         if (!bufferedLength) return;
@@ -20311,13 +20314,19 @@ const createStreamingJsonGzipBlob = async (entries) => {
         await writer.write(encoder.encode(text));
     };
     const writeText = async (text) => {
+        processedLength += text.length;
         if (bufferedLength && bufferedLength + text.length > BUFFER_LIMIT) await flush();
         if (text.length >= BUFFER_LIMIT) {
             await writer.write(encoder.encode(text));
-            return;
+        } else {
+            bufferedParts.push(text);
+            bufferedLength += text.length;
         }
-        bufferedParts.push(text);
-        bufferedLength += text.length;
+        if (processedLength - lastUiYieldLength >= UI_YIELD_INTERVAL) {
+            lastUiYieldLength = processedLength;
+            if (onProgress) onProgress(processedLength);
+            await new Promise(resolve => setTimeout(resolve, 0));
+        }
     };
     const writeValue = async (value, inArray = false) => {
         if (value === undefined || typeof value === 'function' || typeof value === 'symbol') {
@@ -20457,9 +20466,39 @@ const presentBackupSaveBlob = (blob, filename) => {
     document.body.appendChild(overlay);
 };
 
+const showBackupExportProgress = () => {
+    document.getElementById('backup-export-progress')?.remove();
+    const overlay = document.createElement('div');
+    overlay.id = 'backup-export-progress';
+    overlay.style.cssText = 'position:fixed;inset:0;z-index:99999;background:rgba(0,0,0,.55);display:flex;align-items:center;justify-content:center;padding:24px;box-sizing:border-box;';
+    const panel = document.createElement('div');
+    panel.style.cssText = 'width:min(340px,100%);background:#fff;color:#222;border-radius:16px;padding:22px;text-align:center;box-sizing:border-box;box-shadow:0 12px 40px rgba(0,0,0,.3);';
+    const title = document.createElement('div');
+    title.textContent = '正在准备存档…';
+    title.style.cssText = 'font-size:18px;font-weight:600;margin-bottom:10px;';
+    const status = document.createElement('div');
+    status.textContent = '300MB 存档可能需要等待一会，请不要关闭页面';
+    status.style.cssText = 'font-size:14px;color:#777;line-height:1.6;';
+    panel.append(title, status);
+    overlay.appendChild(panel);
+    document.body.appendChild(overlay);
+    return {
+        update(processedChars) {
+            status.textContent = `正在流式压缩：已处理 ${(processedChars / 1024 / 1024).toFixed(0)} MB`;
+        },
+        setStatus(text) {
+            status.textContent = text;
+        },
+        close() {
+            overlay.remove();
+        }
+    };
+};
+
 window.createCompactBackupBlob = createCompactBackupBlob;
 window.downloadBackupBlob = downloadBackupBlob;
 window.presentBackupSaveBlob = presentBackupSaveBlob;
+window.showBackupExportProgress = showBackupExportProgress;
 
 const exportDataSimple = async () => {
     // 1. 定义需要备份的所有资料的 KEY
@@ -20479,6 +20518,9 @@ const exportDataSimple = async () => {
     ];
 
     if (typeof CompressionStream === 'function') {
+        const progress = showBackupExportProgress();
+        // 先让 iOS 把进度层绘制出来，再开始处理大量数据。
+        await new Promise(resolve => requestAnimationFrame(() => setTimeout(resolve, 0)));
         async function* backupEntries() {
             yield ['__metadata', {
                 version: '2.4',
@@ -20544,11 +20586,17 @@ const exportDataSimple = async () => {
         }
 
         try {
-            const compressedBlob = await createStreamingJsonGzipBlob(backupEntries());
+            const compressedBlob = await createStreamingJsonGzipBlob(
+                backupEntries(),
+                processedChars => progress.update(processedChars)
+            );
+            progress.setStatus('压缩完成，正在准备保存…');
             const timestamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
+            progress.close();
             presentBackupSaveBlob(compressedBlob, `AIRP-Backup-${timestamp}.json.gz`);
             return;
         } catch (error) {
+            progress.close();
             console.error('流式压缩导出失败:', error);
             alert(`存档导出失败：${error.message}`);
             return;
