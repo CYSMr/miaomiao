@@ -14502,9 +14502,18 @@ const migrateAllStoredImages = async (onProgress = () => {}) => {
     };
 
     await waitForDatabase();
+    const beautificationImageKeys = new Set([
+        KEYS.CUSTOM_ICONS,
+        KEYS.HOME_WALLPAPER,
+        KEYS.DEFAULT_BACKGROUND_TEXTURE,
+        KEYS.TOP_BAR_TEXTURE,
+        KEYS.BOTTOM_BAR_TEXTURE,
+        KEYS.DECORATIVE_WIDGET_IMAGES,
+        KEYS.WORK_BACKGROUND
+    ]);
     const rows = await db.kvStore.toArray();
     for (const row of rows) {
-        if (row.key === KEYS.DIARY_ENTRIES || row.key === KEYS.DEFAULT_BACKGROUND_TEXTURE) continue;
+        if (row.key === KEYS.DIARY_ENTRIES || beautificationImageKeys.has(row.key)) continue;
         const processedBefore = stats.processed;
         if (row.key === KEYS.CHATS && row.value && typeof row.value === 'object') {
             const wallpapers = new Map();
@@ -14519,12 +14528,6 @@ const migrateAllStoredImages = async (onProgress = () => {}) => {
             }
             row.value = await migrateValue(chatsToMigrate);
             for (const [chatId, wallpaper] of wallpapers) row.value[chatId].wallpaper = wallpaper;
-        } else if (row.key === KEYS.CUSTOM_ICONS && row.value && typeof row.value === 'object') {
-            const listBackground = row.value['icon-list-background'];
-            const iconsToMigrate = { ...row.value };
-            delete iconsToMigrate['icon-list-background'];
-            row.value = await migrateValue(iconsToMigrate);
-            if (listBackground) row.value['icon-list-background'] = listBackground;
         } else {
             row.value = await migrateValue(row.value);
         }

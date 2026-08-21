@@ -42,7 +42,10 @@ const APP_URL = process.env.APP_URL || 'http://127.0.0.1:4183';
             };
             appState.stickers = [{ url: source, name: '我的红色' }];
             appState.aiStickers = [{ url: source, name: '对方红色' }];
-            appState.customIcons = { 'icon-list-background': source };
+            appState.customIcons = {
+                'icon-list-background': source,
+                'icon-dock-1': source
+            };
             await dbStorage.set(KEYS.CHATS, appState.chats);
             await dbStorage.set(KEYS.STICKERS, appState.stickers);
             await dbStorage.set(KEYS.AI_STICKERS, appState.aiStickers);
@@ -51,6 +54,10 @@ const APP_URL = process.env.APP_URL || 'http://127.0.0.1:4183';
             await dbStorage.set(KEYS.FORUM_DATA, { posts: [{ authorAvatar: source, image: source }] });
             await dbStorage.set(KEYS.HOME_WALLPAPER, source);
             await dbStorage.set(KEYS.DEFAULT_BACKGROUND_TEXTURE, source);
+            await dbStorage.set(KEYS.TOP_BAR_TEXTURE, source);
+            await dbStorage.set(KEYS.BOTTOM_BAR_TEXTURE, source);
+            await dbStorage.set(KEYS.DECORATIVE_WIDGET_IMAGES, { bg: source, footer: source, avatar: source });
+            await dbStorage.set(KEYS.WORK_BACKGROUND, source);
             await db.kvStore.put({ key: 'unlisted_storage_probe', value: { audio: 'data:audio/wav;base64,AAAA' } });
 
             const forumDb = await openForumDB();
@@ -75,6 +82,10 @@ const APP_URL = process.env.APP_URL || 'http://127.0.0.1:4183';
             const storedForum = await dbStorage.get(KEYS.FORUM_DATA, {});
             const storedWallpaper = await dbStorage.get(KEYS.HOME_WALLPAPER, '');
             const storedDefaultBackground = await dbStorage.get(KEYS.DEFAULT_BACKGROUND_TEXTURE, '');
+            const storedTopBar = await dbStorage.get(KEYS.TOP_BAR_TEXTURE, '');
+            const storedBottomBar = await dbStorage.get(KEYS.BOTTOM_BAR_TEXTURE, '');
+            const storedWidgetImages = await dbStorage.get(KEYS.DECORATIVE_WIDGET_IMAGES, {});
+            const storedWorkBackground = await dbStorage.get(KEYS.WORK_BACKGROUND, '');
             const migratedForumDb = await openForumDB();
             const forumRead = migratedForumDb.transaction([FORUM_STORE_NAME], 'readonly');
             const independentForumRow = await new Promise((resolve, reject) => {
@@ -108,6 +119,7 @@ const APP_URL = process.env.APP_URL || 'http://127.0.0.1:4183';
                 gifType: gifRow.mimeType,
                 migration,
                 storedListBackground: storedCustomIcons['icon-list-background'],
+                storedDockIcon: storedCustomIcons['icon-dock-1'],
                 immediateListBackground,
                 chatUrls: appState.chats.demo.history.map(item => item.content.url),
                 chatAvatar: appState.chats.demo.personas.ai.avatar,
@@ -121,6 +133,10 @@ const APP_URL = process.env.APP_URL || 'http://127.0.0.1:4183';
                 independentForumImage: independentForumRow.data.posts[0].image,
                 homeWallpaper: storedWallpaper,
                 defaultBackground: storedDefaultBackground,
+                topBar: storedTopBar,
+                bottomBar: storedBottomBar,
+                widgetImages: storedWidgetImages,
+                workBackground: storedWorkBackground,
                 rowCount: await db.imageAssets.count(),
                 apiUrl: apiMessages[0].content[0].image_url.url,
                 hydratedImage: imageProbe.src,
@@ -168,8 +184,15 @@ const APP_URL = process.env.APP_URL || 'http://127.0.0.1:4183';
         assert.equal(result.forumImage, result.first);
         assert.equal(result.independentForumAvatar, result.first);
         assert.equal(result.independentForumImage, result.first);
-        assert.equal(result.homeWallpaper, result.first);
+        assert.equal(result.homeWallpaper, result.originalSource);
         assert.equal(result.defaultBackground, result.originalSource);
+        assert.equal(result.storedDockIcon, result.originalSource);
+        assert.equal(result.topBar, result.originalSource);
+        assert.equal(result.bottomBar, result.originalSource);
+        assert.equal(result.widgetImages.bg, result.originalSource);
+        assert.equal(result.widgetImages.footer, result.originalSource);
+        assert.equal(result.widgetImages.avatar, result.originalSource);
+        assert.equal(result.workBackground, result.originalSource);
         assert.equal(result.storedListBackground, result.originalSource);
         assert.match(result.immediateListBackground, /data:image/);
         assert.equal(reloadedStyle.asset, result.originalSource);
