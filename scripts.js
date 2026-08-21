@@ -20290,6 +20290,92 @@ const createCompactBackupBlob = (backupData) => {
     return new Blob(parts, { type: 'application/json' });
 };
 
+const createStreamingJsonGzipBlob = async (entries) => {
+    if (typeof CompressionStream !== 'function') throw new Error('当前浏览器不支持流式压缩');
+
+    const compression = new CompressionStream('gzip');
+    const writer = compression.writable.getWriter();
+    const blobPromise = new Response(compression.readable, {
+        headers: { 'Content-Type': 'application/gzip' }
+    }).blob();
+    const encoder = new TextEncoder();
+    const bufferedParts = [];
+    let bufferedLength = 0;
+    const BUFFER_LIMIT = 256 * 1024;
+
+    const flush = async () => {
+        if (!bufferedLength) return;
+        const text = bufferedParts.join('');
+        bufferedParts.length = 0;
+        bufferedLength = 0;
+        await writer.write(encoder.encode(text));
+    };
+    const writeText = async (text) => {
+        if (bufferedLength && bufferedLength + text.length > BUFFER_LIMIT) await flush();
+        if (text.length >= BUFFER_LIMIT) {
+            await writer.write(encoder.encode(text));
+            return;
+        }
+        bufferedParts.push(text);
+        bufferedLength += text.length;
+    };
+    const writeValue = async (value, inArray = false) => {
+        if (value === undefined || typeof value === 'function' || typeof value === 'symbol') {
+            await writeText(inArray ? 'null' : 'null');
+        } else if (value === null) {
+            await writeText('null');
+        } else if (typeof value === 'string' || typeof value === 'boolean') {
+            await writeText(JSON.stringify(value));
+        } else if (typeof value === 'number') {
+            await writeText(Number.isFinite(value) ? String(value) : 'null');
+        } else if (typeof value.toJSON === 'function') {
+            await writeValue(value.toJSON(), inArray);
+        } else if (Array.isArray(value)) {
+            await writeText('[');
+            for (let index = 0; index < value.length; index++) {
+                if (index) await writeText(',');
+                await writeValue(value[index], true);
+            }
+            await writeText(']');
+        } else {
+            await writeText('{');
+            let first = true;
+            for (const key of Object.keys(value)) {
+                const child = value[key];
+                if (child === undefined || typeof child === 'function' || typeof child === 'symbol') continue;
+                if (!first) await writeText(',');
+                first = false;
+                await writeText(JSON.stringify(key));
+                await writeText(':');
+                await writeValue(child, false);
+            }
+            await writeText('}');
+        }
+    };
+
+    try {
+        await writeText('{');
+        let first = true;
+        for await (const [key, value] of entries) {
+            if (value === undefined) continue;
+            if (!first) await writeText(',');
+            first = false;
+            await writeText(JSON.stringify(key));
+            await writeText(':');
+            await writeValue(value, false);
+        }
+        await writeText('}');
+        await flush();
+        await writer.close();
+        return await blobPromise;
+    } catch (error) {
+        await writer.abort(error).catch(() => {});
+        throw error;
+    }
+};
+
+window.createStreamingJsonGzipBlob = createStreamingJsonGzipBlob;
+
 const downloadBackupBlob = async (blob, filename) => {
     // iOS standalone PWA 对 blob: + target="_blank" 的处理不稳定，可能直接把存档
     // 当成新页面打开。优先交给系统文件分享；桌面端再回退为普通下载。
@@ -20321,8 +20407,59 @@ const downloadBackupBlob = async (blob, filename) => {
     return 'downloaded';
 };
 
+const presentBackupSaveBlob = (blob, filename) => {
+    document.getElementById('backup-save-overlay')?.remove();
+    const url = URL.createObjectURL(blob);
+    const overlay = document.createElement('div');
+    overlay.id = 'backup-save-overlay';
+    overlay.style.cssText = 'position:fixed;inset:0;z-index:99999;background:rgba(0,0,0,.55);display:flex;align-items:center;justify-content:center;padding:24px;box-sizing:border-box;';
+    const panel = document.createElement('div');
+    panel.style.cssText = 'width:min(360px,100%);background:#fff;color:#222;border-radius:16px;padding:20px;box-sizing:border-box;text-align:center;box-shadow:0 12px 40px rgba(0,0,0,.3);';
+    panel.innerHTML = `<div style="font-size:18px;font-weight:600;margin-bottom:8px;">存档已准备好</div><div style="font-size:13px;color:#777;margin-bottom:16px;word-break:break-all;">${filename}<br>${(blob.size / 1024 / 1024).toFixed(2)} MB</div>`;
+
+    const close = () => {
+        overlay.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 60_000);
+    };
+
+    if (typeof File === 'function' && navigator.share && navigator.canShare) {
+        const file = new File([blob], filename, { type: blob.type || 'application/gzip' });
+        if (navigator.canShare({ files: [file] })) {
+            const shareButton = document.createElement('button');
+            shareButton.textContent = '系统分享 / 存储到文件';
+            shareButton.style.cssText = 'width:100%;padding:12px;border:0;border-radius:10px;background:#111;color:#fff;font-size:15px;margin-bottom:10px;';
+            shareButton.onclick = async () => {
+                try {
+                    await navigator.share({ files: [file], title: '喵喵机存档' });
+                    close();
+                } catch (error) {
+                    if (error?.name !== 'AbortError') alert(`系统分享失败：${error.message}`);
+                }
+            };
+            panel.appendChild(shareButton);
+        }
+    }
+
+    const downloadLink = document.createElement('a');
+    downloadLink.href = url;
+    downloadLink.download = filename;
+    downloadLink.textContent = '直接下载存档';
+    downloadLink.style.cssText = 'display:block;width:100%;padding:12px;border-radius:10px;background:#ececec;color:#222;font-size:15px;text-decoration:none;box-sizing:border-box;margin-bottom:10px;';
+    downloadLink.onclick = () => setTimeout(close, 1000);
+    panel.appendChild(downloadLink);
+
+    const cancelButton = document.createElement('button');
+    cancelButton.textContent = '取消';
+    cancelButton.style.cssText = 'width:100%;padding:10px;border:0;background:transparent;color:#777;font-size:14px;';
+    cancelButton.onclick = close;
+    panel.appendChild(cancelButton);
+    overlay.appendChild(panel);
+    document.body.appendChild(overlay);
+};
+
 window.createCompactBackupBlob = createCompactBackupBlob;
 window.downloadBackupBlob = downloadBackupBlob;
+window.presentBackupSaveBlob = presentBackupSaveBlob;
 
 const exportDataSimple = async () => {
     // 1. 定义需要备份的所有资料的 KEY
@@ -20340,6 +20477,83 @@ const exportDataSimple = async () => {
         KEYS.WORK_BACKGROUND  // 添加打工背景图片导出
         // 包含所有用户数据和美化设置，包括API预设
     ];
+
+    if (typeof CompressionStream === 'function') {
+        async function* backupEntries() {
+            yield ['__metadata', {
+                version: '2.4',
+                exportDate: new Date().toISOString(),
+                appVersion: 'AIRP-Enhanced',
+                dataFormat: 'gzip-json',
+                description: '喵喵机全局存档 - 流式压缩版'
+            }];
+
+            for (const key of keysToExport) {
+                let data = await dbStorage.get(key);
+                if (key === KEYS.MCP_CONFIGS && data) data = sanitizeMcpConfigsForBackup(data);
+                if (data !== undefined) yield [key, data];
+                data = null;
+            }
+
+            try {
+                await waitForDatabase();
+                const walletData = await db.wallet.get('main');
+                if (walletData) yield ['wallet', walletData];
+            } catch (error) {
+                console.warn('⚠️ 导出钱包数据失败:', error);
+            }
+            try {
+                await waitForDatabase();
+                const shopItems = await db.shopItems.toArray();
+                if (shopItems?.length) yield ['shopItems', shopItems];
+            } catch (error) {
+                console.warn('⚠️ 导出商店物品失败:', error);
+            }
+
+            const farmUserId = localStorage.getItem('farm_user_id');
+            if (farmUserId) yield ['farmUserId', farmUserId];
+
+            let forumData = null;
+            try {
+                const forumDb = await new Promise((resolve, reject) => {
+                    const request = indexedDB.open('ForumDatabase', 1);
+                    request.onerror = () => reject(request.error);
+                    request.onsuccess = () => resolve(request.result);
+                    request.onupgradeneeded = event => {
+                        const openedDb = event.target.result;
+                        if (!openedDb.objectStoreNames.contains('forumData')) {
+                            openedDb.createObjectStore('forumData', { keyPath: 'id' });
+                        }
+                    };
+                });
+                const transaction = forumDb.transaction(['forumData'], 'readonly');
+                forumData = await new Promise((resolve, reject) => {
+                    const request = transaction.objectStore('forumData').get('forumState');
+                    request.onsuccess = () => resolve(request.result?.data || null);
+                    request.onerror = () => reject(request.error);
+                });
+                forumDb.close();
+            } catch (error) {
+                console.warn('⚠️ 读取论坛数据失败，尝试旧存储:', error);
+            }
+            if (!forumData) {
+                const legacyForumData = localStorage.getItem('forum_data');
+                if (legacyForumData) forumData = JSON.parse(legacyForumData);
+            }
+            if (forumData) yield ['forum_data', forumData];
+        }
+
+        try {
+            const compressedBlob = await createStreamingJsonGzipBlob(backupEntries());
+            const timestamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
+            presentBackupSaveBlob(compressedBlob, `AIRP-Backup-${timestamp}.json.gz`);
+            return;
+        } catch (error) {
+            console.error('流式压缩导出失败:', error);
+            alert(`存档导出失败：${error.message}`);
+            return;
+        }
+    }
     
     const backupData = {
         // 添加版本信息和元数据，便于将来的兼容性处理
@@ -20639,14 +20853,22 @@ const detectAndMigrateBackupData = (backupData) => {
  * 【增强版】汇入资料函数 - 支持旧版本兼容
  * 读取使用者选择的 JSON 档案，自动检测版本并迁移数据格式，然后写入 key-value 储存。
  */
-const handleImportSimple = (event) => {
+const handleImportSimple = async (event) => {
     const file = event.target.files[0];
     if (!file) return;
 
-    const reader = new FileReader();
-    reader.onload = async (e) => {
-        try {
-            const originalBackupData = JSON.parse(e.target.result);
+    try {
+            let backupText;
+            if (file.name.toLowerCase().endsWith('.gz') || file.type === 'application/gzip') {
+                if (typeof DecompressionStream !== 'function') {
+                    throw new Error('当前浏览器不支持解压该存档');
+                }
+                const decompressed = file.stream().pipeThrough(new DecompressionStream('gzip'));
+                backupText = await new Response(decompressed).text();
+            } else {
+                backupText = await file.text();
+            }
+            const originalBackupData = JSON.parse(backupText);
             
             // 使用 confirm 再次确认，防止误操作覆盖现有资料
             if (!confirm("确定要汇入备份档案吗？这将会覆盖所有现有资料！")) {
@@ -20882,12 +21104,10 @@ const handleImportSimple = (event) => {
                 setTimeout(() => location.reload(), 1000);
             }
 
-        } catch (error) {
+    } catch (error) {
             console.error("导入失败:", error);
             alert(`汇入失败：档案格式错误或已损坏。\n\n详细错误信息：${error.message}\n\n请确保选择的是有效的备份文件。`);
-        }
-    };
-    reader.readAsText(file);
+    }
     event.target.value = ''; // 清空选择，以便下次还能选择同个档案
 };
 

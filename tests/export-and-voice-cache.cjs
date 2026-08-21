@@ -46,6 +46,23 @@ const APP_URL = process.env.APP_URL || 'http://127.0.0.1:4183';
                 const blobText = await blob.text();
                 const deliveryMethod = await window.downloadBackupBlob(blob, 'backup.json');
 
+                const oneMegabyteImagePayload = 'A'.repeat(1024 * 1024);
+                const largeGzipBlob = await window.createStreamingJsonGzipBlob([
+                    ['images', Array(300).fill(oneMegabyteImagePayload)]
+                ]);
+                const decompressedReader = largeGzipBlob.stream()
+                    .pipeThrough(new DecompressionStream('gzip'))
+                    .getReader();
+                let decompressedBytes = 0;
+                while (true) {
+                    const { value, done } = await decompressedReader.read();
+                    if (done) break;
+                    decompressedBytes += value.byteLength;
+                }
+                window.presentBackupSaveBlob(largeGzipBlob, 'AIRP-Backup-large.json.gz');
+                const saveOverlay = document.getElementById('backup-save-overlay');
+                const saveLink = saveOverlay.querySelector('a[download]');
+
                 const fakeCache = {
                     deleted: [],
                     async keys() {
@@ -76,6 +93,12 @@ const APP_URL = process.env.APP_URL || 'http://127.0.0.1:4183';
                     blobText,
                     deliveryMethod,
                     sharedFiles,
+                    largeGzipSize: largeGzipBlob.size,
+                    decompressedBytes,
+                    saveLinkDownload: saveLink.download,
+                    saveLinkTarget: saveLink.target,
+                    hasShareButton: Array.from(saveOverlay.querySelectorAll('button'))
+                        .some(button => button.textContent.includes('系统分享')),
                     clickedAnchors,
                     revokedImmediately: revokedUrls.length > 0,
                     deleted: fakeCache.deleted,
@@ -96,6 +119,11 @@ const APP_URL = process.env.APP_URL || 'http://127.0.0.1:4183';
             size: Buffer.byteLength(result.blobText)
         }]);
         assert.equal(result.clickedAnchors.length, 0, 'native file sharing must avoid blob navigation');
+        assert.ok(result.decompressedBytes > 300 * 1024 * 1024, 'large backup must stream all 300 MB');
+        assert.ok(result.largeGzipSize < 1024 * 1024, 'repeated image payloads must compress below 1 MB');
+        assert.equal(result.saveLinkDownload, 'AIRP-Backup-large.json.gz');
+        assert.equal(result.saveLinkTarget, '', 'save link must not replace the PWA page');
+        assert.equal(result.hasShareButton, true, 'prepared backup must require a fresh user tap for iOS sharing');
         assert.equal(result.revokedImmediately, false, 'blob URL must survive long enough for iOS to consume it');
         assert.deepEqual(result.deleted, [
             'https://cache/0',
