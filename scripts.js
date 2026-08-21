@@ -5050,10 +5050,31 @@ const MINIMAX_VOICE_ENDPOINTS = {
     global: 'https://api.minimax.io/v1/t2a_v2'
 };
 const MINIMAX_VOICE_CACHE = 'miaomiao-minimax-voice-v1';
+const MINIMAX_VOICE_CACHE_LIMIT = 30;
 const MINIMAX_VOICE_UNLOCK_AUDIO = 'data:audio/wav;base64,UklGRigAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQQAAACAgICA';
 let activeMiniMaxVoiceAudio = null;
 let activeMiniMaxVoiceElement = null;
 const pendingMiniMaxVoiceRequests = new Map();
+
+const trimMiniMaxVoiceCache = async (cache, limit = MINIMAX_VOICE_CACHE_LIMIT) => {
+    if (!cache || limit < 1) return;
+    const requests = await cache.keys();
+    const excess = requests.length - limit;
+    if (excess <= 0) return;
+    await Promise.all(requests.slice(0, excess).map(request => cache.delete(request)));
+};
+
+const cleanupMiniMaxVoiceCache = async (cacheStorage = window.caches, limit = MINIMAX_VOICE_CACHE_LIMIT) => {
+    if (!cacheStorage?.open) return;
+    const cache = await cacheStorage.open(MINIMAX_VOICE_CACHE);
+    await trimMiniMaxVoiceCache(cache, limit);
+};
+
+window.trimMiniMaxVoiceCache = trimMiniMaxVoiceCache;
+window.cleanupMiniMaxVoiceCache = cleanupMiniMaxVoiceCache;
+if ('caches' in window) {
+    cleanupMiniMaxVoiceCache().catch(error => console.warn('MiniMax 语音缓存整理失败:', error));
+}
 
 const getMiniMaxVoiceConfig = () => {
     const config = { ...(appState.minimaxVoiceConfig || {}) };
@@ -5193,7 +5214,10 @@ const getOrCreateMiniMaxVoiceBlob = async (text, config) => {
     if (!pendingMiniMaxVoiceRequests.has(requestKey)) {
         const requestPromise = fetchMiniMaxVoiceBlob(text, config)
             .then(async blob => {
-                if (cache) await cache.put(cacheRequest, new Response(blob, { headers: { 'Content-Type': 'audio/mpeg' } }));
+                if (cache) {
+                    await cache.put(cacheRequest, new Response(blob, { headers: { 'Content-Type': 'audio/mpeg' } }));
+                    await trimMiniMaxVoiceCache(cache);
+                }
                 return blob;
             })
             .finally(() => pendingMiniMaxVoiceRequests.delete(requestKey));
@@ -20256,6 +20280,33 @@ const handleIconUpload = (event) => {
     event.target.value = '';
 };
 
+const createCompactBackupBlob = (backupData) => {
+    const parts = ['{'];
+    Object.entries(backupData).forEach(([key, value], index) => {
+        if (index > 0) parts.push(',');
+        parts.push(JSON.stringify(key), ':', JSON.stringify(value));
+    });
+    parts.push('}');
+    return new Blob(parts, { type: 'application/json' });
+};
+
+const downloadBackupBlob = (blob, filename) => {
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = filename;
+    anchor.target = '_blank';
+    anchor.rel = 'noopener';
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    // iOS PWA 需要在点击后继续读取 Blob；立即释放会导致下载失败或当前页面重载。
+    setTimeout(() => URL.revokeObjectURL(url), 60_000);
+};
+
+window.createCompactBackupBlob = createCompactBackupBlob;
+window.downloadBackupBlob = downloadBackupBlob;
+
 const exportDataSimple = async () => {
     // 1. 定义需要备份的所有资料的 KEY
     const keysToExport = [
@@ -20401,17 +20452,9 @@ const exportDataSimple = async () => {
         backupData[KEYS.MCP_CONFIGS] = sanitizeMcpConfigsForBackup(backupData[KEYS.MCP_CONFIGS]);
     }
 
-    const jsonString = JSON.stringify(backupData, null, 2);
-    const blob = new Blob([jsonString], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
     const timestamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
-    a.href = url;
-    a.download = `AIRP-Backup-${timestamp}.json`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
+    const blob = createCompactBackupBlob(backupData);
+    downloadBackupBlob(blob, `AIRP-Backup-${timestamp}.json`);
     alert('资料已开始汇出！');
 };
 
