@@ -40,6 +40,10 @@ const APP_URL = process.env.APP_URL || 'http://127.0.0.1:4183';
                     size: data.files[0].size
                 })
             });
+            Object.defineProperty(navigator, 'userAgent', {
+                configurable: true,
+                value: 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 Mobile/15E148'
+            });
 
             try {
                 const blob = window.createCompactBackupBlob({ greeting: '喵', nested: { ok: true } });
@@ -102,8 +106,7 @@ const APP_URL = process.env.APP_URL || 'http://127.0.0.1:4183';
                     largeGzipSize: largeGzipBlob.size,
                     decompressedBytes,
                     progressUpdateCount: progressUpdates.length,
-                    saveLinkDownload: saveLink.download,
-                    saveLinkTarget: saveLink.target,
+                    hasDirectDownloadLink: Boolean(saveLink),
                     hasShareButton: Array.from(saveOverlay.querySelectorAll('button'))
                         .some(button => button.textContent.includes('系统分享')),
                     clickedAnchors,
@@ -129,8 +132,7 @@ const APP_URL = process.env.APP_URL || 'http://127.0.0.1:4183';
         assert.ok(result.decompressedBytes > 300 * 1024 * 1024, 'large backup must stream all 300 MB');
         assert.ok(result.largeGzipSize < 5 * 1024 * 1024, 'repeated image payloads must compress below 5 MB');
         assert.ok(result.progressUpdateCount > 50, 'large structured backup must yield progress updates');
-        assert.equal(result.saveLinkDownload, 'AIRP-Backup-large.json.gz');
-        assert.equal(result.saveLinkTarget, '', 'save link must not replace the PWA page');
+        assert.equal(result.hasDirectDownloadLink, false, 'iOS must not offer a blob download that opens as a broken page');
         assert.equal(result.hasShareButton, true, 'prepared backup must require a fresh user tap for iOS sharing');
         assert.equal(result.revokedImmediately, false, 'blob URL must survive long enough for iOS to consume it');
         assert.deepEqual(result.deleted, [

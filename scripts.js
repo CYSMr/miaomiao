@@ -20418,7 +20418,18 @@ const downloadBackupBlob = async (blob, filename) => {
 
 const presentBackupSaveBlob = (blob, filename) => {
     document.getElementById('backup-save-overlay')?.remove();
-    const url = URL.createObjectURL(blob);
+    const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent)
+        || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+    const file = typeof File === 'function'
+        ? new File([blob], filename, { type: blob.type || 'application/gzip' })
+        : null;
+    let canShareFile = false;
+    try {
+        canShareFile = Boolean(file && navigator.share && navigator.canShare?.({ files: [file] }));
+    } catch (error) {
+        console.warn('检测系统文件分享能力失败:', error);
+    }
+    let url = null;
     const overlay = document.createElement('div');
     overlay.id = 'backup-save-overlay';
     overlay.style.cssText = 'position:fixed;inset:0;z-index:99999;background:rgba(0,0,0,.55);display:flex;align-items:center;justify-content:center;padding:24px;box-sizing:border-box;';
@@ -20428,34 +20439,39 @@ const presentBackupSaveBlob = (blob, filename) => {
 
     const close = () => {
         overlay.remove();
-        setTimeout(() => URL.revokeObjectURL(url), 60_000);
+        if (url) setTimeout(() => URL.revokeObjectURL(url), 60_000);
     };
 
-    if (typeof File === 'function' && navigator.share && navigator.canShare) {
-        const file = new File([blob], filename, { type: blob.type || 'application/gzip' });
-        if (navigator.canShare({ files: [file] })) {
-            const shareButton = document.createElement('button');
-            shareButton.textContent = '系统分享 / 存储到文件';
-            shareButton.style.cssText = 'width:100%;padding:12px;border:0;border-radius:10px;background:#111;color:#fff;font-size:15px;margin-bottom:10px;';
-            shareButton.onclick = async () => {
-                try {
-                    await navigator.share({ files: [file], title: '喵喵机存档' });
-                    close();
-                } catch (error) {
-                    if (error?.name !== 'AbortError') alert(`系统分享失败：${error.message}`);
-                }
-            };
-            panel.appendChild(shareButton);
-        }
+    if (canShareFile) {
+        const shareButton = document.createElement('button');
+        shareButton.textContent = '系统分享 / 存储到文件';
+        shareButton.style.cssText = 'width:100%;padding:12px;border:0;border-radius:10px;background:#111;color:#fff;font-size:15px;margin-bottom:10px;';
+        shareButton.onclick = async () => {
+            try {
+                await navigator.share({ files: [file], title: '喵喵机存档' });
+                close();
+            } catch (error) {
+                if (error?.name !== 'AbortError') alert(`系统分享失败：${error.message || error}`);
+            }
+        };
+        panel.appendChild(shareButton);
     }
 
-    const downloadLink = document.createElement('a');
-    downloadLink.href = url;
-    downloadLink.download = filename;
-    downloadLink.textContent = '直接下载存档';
-    downloadLink.style.cssText = 'display:block;width:100%;padding:12px;border-radius:10px;background:#ececec;color:#222;font-size:15px;text-decoration:none;box-sizing:border-box;margin-bottom:10px;';
-    downloadLink.onclick = () => setTimeout(close, 1000);
-    panel.appendChild(downloadLink);
+    if (!isIOS) {
+        url = URL.createObjectURL(blob);
+        const downloadLink = document.createElement('a');
+        downloadLink.href = url;
+        downloadLink.download = filename;
+        downloadLink.textContent = '直接下载存档';
+        downloadLink.style.cssText = 'display:block;width:100%;padding:12px;border-radius:10px;background:#ececec;color:#222;font-size:15px;text-decoration:none;box-sizing:border-box;margin-bottom:10px;';
+        downloadLink.onclick = () => setTimeout(close, 1000);
+        panel.appendChild(downloadLink);
+    } else if (!canShareFile) {
+        const unsupported = document.createElement('div');
+        unsupported.textContent = '当前 iPhone 无法调用系统文件分享，请在 Safari 中重新打开后导出。';
+        unsupported.style.cssText = 'font-size:13px;line-height:1.5;color:#c44;margin-bottom:10px;';
+        panel.appendChild(unsupported);
+    }
 
     const cancelButton = document.createElement('button');
     cancelButton.textContent = '取消';
