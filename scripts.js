@@ -233,6 +233,7 @@ function convertGeminiResponse(geminiData) {
 
 // 通用API调用函数
 async function callApi(messages, isMainChat = true, options = {}) {
+    messages = await resolveApiImageAssets(messages);
     const requestSignal = options.signal;
     const apiOptions = { ...options };
     delete apiOptions.signal;
@@ -385,10 +386,11 @@ async function initializeDatabase() {
     if (typeof Dexie !== 'undefined') {
         try {
             db = new Dexie('AIRP_Beautified_DB');
-            db.version(21).stores({
+            db.version(22).stores({
                 kvStore: 'key',
                 wallet: '&id',  // 钱包数据表
                 shopItems: '++id, name, price',  // 商品表
+                imageAssets: '&id, mimeType, size, createdAt'
             });
             // 等待数据库真正打开
             await db.open();
@@ -569,6 +571,139 @@ const dbStorage = {
         }
     }
 };
+
+const IMAGE_ASSET_PREFIX = 'asset://';
+const imageAssetObjectUrls = new Map();
+
+const isImageAssetUrl = value => typeof value === 'string' && value.startsWith(IMAGE_ASSET_PREFIX);
+const imageAssetIdFromUrl = value => isImageAssetUrl(value) ? value.slice(IMAGE_ASSET_PREFIX.length) : '';
+
+const imageBlobToDataUrl = blob => new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = () => reject(reader.error || new Error('图片读取失败'));
+    reader.readAsDataURL(blob);
+});
+
+const imageSourceToBlob = async source => {
+    if (source instanceof Blob) return source;
+    if (typeof source === 'string' && source.startsWith('data:image/')) {
+        const response = await fetch(source);
+        return response.blob();
+    }
+    throw new Error('只支持本地图片或图片 Data URL');
+};
+
+const compressStaticImageBlob = async (blob, options = {}) => {
+    const maxWidth = options.maxWidth || 512;
+    const maxHeight = options.maxHeight || 512;
+    const quality = options.quality ?? 0.8;
+    if ((blob.type || '').toLowerCase() === 'image/gif') return blob;
+
+    const sourceUrl = URL.createObjectURL(blob);
+    try {
+        const image = await new Promise((resolve, reject) => {
+            const element = new Image();
+            element.onload = () => resolve(element);
+            element.onerror = () => reject(new Error('图片解码失败'));
+            element.src = sourceUrl;
+        });
+        let width = image.naturalWidth || image.width;
+        let height = image.naturalHeight || image.height;
+        if (width > maxWidth || height > maxHeight) {
+            const ratio = Math.min(maxWidth / width, maxHeight / height);
+            width = Math.max(1, Math.round(width * ratio));
+            height = Math.max(1, Math.round(height * ratio));
+        }
+        const canvas = document.createElement('canvas');
+        canvas.width = width;
+        canvas.height = height;
+        canvas.getContext('2d').drawImage(image, 0, 0, width, height);
+        return await new Promise((resolve, reject) => {
+            canvas.toBlob(result => result ? resolve(result) : reject(new Error('图片压缩失败')), 'image/webp', quality);
+        });
+    } finally {
+        URL.revokeObjectURL(sourceUrl);
+    }
+};
+
+const hashImageBlob = async blob => {
+    const digest = await crypto.subtle.digest('SHA-256', await blob.arrayBuffer());
+    return Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, '0')).join('');
+};
+
+const persistImageAsset = async (source, options = {}) => {
+    await waitForDatabase();
+    const originalBlob = await imageSourceToBlob(source);
+    const storedBlob = options.compress === false
+        ? originalBlob
+        : await compressStaticImageBlob(originalBlob, options);
+    const id = await hashImageBlob(storedBlob);
+    const existing = await db.imageAssets.get(id);
+    if (!existing) {
+        await db.imageAssets.put({
+            id,
+            blob: storedBlob,
+            mimeType: storedBlob.type || originalBlob.type || 'image/webp',
+            size: storedBlob.size,
+            createdAt: Date.now()
+        });
+    }
+    return {
+        url: `${IMAGE_ASSET_PREFIX}${id}`,
+        id,
+        mimeType: storedBlob.type || originalBlob.type || 'image/webp',
+        originalSize: originalBlob.size,
+        storedSize: existing ? 0 : storedBlob.size,
+        assetSize: existing?.size || storedBlob.size,
+        deduplicated: Boolean(existing)
+    };
+};
+
+const storeImageAsset = async (source, options = {}) => (await persistImageAsset(source, options)).url;
+
+const resolveImageSource = async (value, mode = 'object-url') => {
+    if (!isImageAssetUrl(value)) return value || '';
+    const id = imageAssetIdFromUrl(value);
+    await waitForDatabase();
+    const asset = await db.imageAssets.get(id);
+    if (!asset?.blob) return '';
+    if (mode === 'data-url') return imageBlobToDataUrl(asset.blob);
+    if (!imageAssetObjectUrls.has(id)) imageAssetObjectUrls.set(id, URL.createObjectURL(asset.blob));
+    return imageAssetObjectUrls.get(id);
+};
+
+const setImageElementSource = (element, value) => {
+    if (!element) return;
+    if (!isImageAssetUrl(value)) {
+        element.src = value || '';
+        return;
+    }
+    resolveImageSource(value).then(url => {
+        if (url && element.isConnected) element.src = url;
+    }).catch(error => console.warn('图片资源读取失败:', error));
+};
+
+const resolveApiImageAssets = async messages => Promise.all((messages || []).map(async message => {
+    if (!Array.isArray(message?.content)) return message;
+    const content = await Promise.all(message.content.map(async item => {
+        if (item?.type !== 'image_url') return item;
+        const imageUrl = item.image_url?.url || item.image_url;
+        if (!isImageAssetUrl(imageUrl)) return item;
+        const resolved = await resolveImageSource(imageUrl, 'data-url');
+        return {
+            ...item,
+            image_url: typeof item.image_url === 'object'
+                ? { ...item.image_url, url: resolved }
+                : resolved
+        };
+    }));
+    return { ...message, content };
+}));
+
+window.storeImageAsset = storeImageAsset;
+window.resolveImageSource = resolveImageSource;
+window.resolveApiImageAssets = resolveApiImageAssets;
 
 const createMcpId = () => `mcp_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 const createPersonaId = (kind = 'persona') => `persona_${kind}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
@@ -4568,7 +4703,7 @@ const renderAiStickers = () => {
     appState.aiStickers.forEach((sticker, index) => { // <-- 注意参数是 sticker 和 index
         const img = document.createElement('img');
         img.className = 'sticker-item';
-        img.src = sticker.url; // <-- 从对象中获取 url
+        setImageElementSource(img, sticker.url);
         img.title = sticker.name; // <-- 从对象中获取 name 作为提示
 
         let touchStartX = 0;
@@ -4658,7 +4793,7 @@ const sendRandomAiSticker = async () => {
     const randomIndex = Math.floor(Math.random() * appState.aiStickers.length);
     const stickerSrc = appState.aiStickers[randomIndex];
 
-    const imageData = { type: 'just_image', url: stickerSrc };
+    const imageData = { type: 'just_image', url: stickerSrc.url || stickerSrc };
     const timestamp = Date.now() + Math.random();
 
     // 延迟发送，模仿思考和操作
@@ -5873,10 +6008,15 @@ else if (contentData.statusText === '已退回') {
                 }
                 contentDiv.innerHTML = `<div class="transfer-top-section"><div class="transfer-icon">¥</div>${detailsHTML}</div><div class="transfer-footer">${footerText}</div>`;
                 break;
-            case 'just_image':
-                contentDiv.className = 'content just-image-content'; 
-                contentDiv.innerHTML = `<img src="${contentData.url}" alt="image-message">`;
+            case 'sticker':
+            case 'just_image': {
+                contentDiv.className = 'content just-image-content';
+                const image = document.createElement('img');
+                image.alt = 'image-message';
+                contentDiv.appendChild(image);
+                setImageElementSource(image, contentData.url);
                 break;
+            }
             // ▼▼▼ 复杂HTML页面渲染支持（prependMessage） ▼▼▼
             case 'html_page':
                 contentDiv.className = 'content html-page-content';
@@ -6901,10 +7041,14 @@ const appendMessage = (message, messageIndex = null) => {
                 break;
             // ▼▼▼ 核心修正：在这里添加一个 case 来处理 sticker 类型 ▼▼▼
             case 'sticker':
-            case 'just_image':
-                contentDiv.className = 'content just-image-content'; 
-                contentDiv.innerHTML = `<img src="${contentData.url}" alt="image-message">`;
+            case 'just_image': {
+                contentDiv.className = 'content just-image-content';
+                const image = document.createElement('img');
+                image.alt = 'image-message';
+                contentDiv.appendChild(image);
+                setImageElementSource(image, contentData.url);
                 break;
+            }
             // ▲▲▲ 修正结束 ▲▲▲
             // ▼▼▼ 复杂HTML页面渲染支持 ▼▼▼
             case 'html_page':
@@ -9678,7 +9822,8 @@ const processHistoryForAPI = (history, chatOverride = null) => {
         }
 
         const next_m = (i + 1 < history.length) ? history[i + 1] : null;
-        if (m.role === 'user' && m.content?.type === 'just_image' && next_m?.role === 'user' && typeof next_m?.content === 'string') {
+        const isUserImage = m.role === 'user' && ['just_image', 'sticker'].includes(m.content?.type) && m.content?.url;
+        if (isUserImage && next_m?.role === 'user' && typeof next_m?.content === 'string') {
             currentApiMessage = {
                 role: 'user',
                 content: [
@@ -9689,7 +9834,7 @@ const processHistoryForAPI = (history, chatOverride = null) => {
             processedIndices.add(i);
             processedIndices.add(i + 1);
         }
-        else if (m.role === 'user' && m.content?.type === 'just_image') {
+        else if (isUserImage) {
              currentApiMessage = {
                 role: 'user',
                 content: [
@@ -13590,7 +13735,7 @@ const renderManageMyStickers = () => {
     appState.stickers.forEach((sticker, index) => {
         const img = document.createElement('img');
         img.className = 'sticker-item';
-        img.src = sticker.url;
+        setImageElementSource(img, sticker.url);
         img.title = sticker.name;
 
         let touchStartX = 0;
@@ -13679,7 +13824,7 @@ const renderManageAiStickers = () => {
     appState.aiStickers.forEach((sticker, index) => {
         const img = document.createElement('img');
         img.className = 'sticker-item';
-        img.src = sticker.url;
+        setImageElementSource(img, sticker.url);
         img.title = sticker.name;
 
         let touchStartX = 0;
@@ -13934,7 +14079,7 @@ const renderStickers = () => {
     appState.stickers.forEach((sticker, index) => { // <-- 注意这里是 sticker, index
         const img = document.createElement('img');
         img.className = 'sticker-item';
-        img.src = sticker.url; // <-- 从对象的 url 属性获取图片链接
+        setImageElementSource(img, sticker.url);
         img.title = sticker.name; // <-- 将名字设置为图片的悬浮提示
 
         let touchStartX = 0;
@@ -14185,20 +14330,87 @@ const toggleDarkMode = async () => {
     await dbStorage.set(KEYS.DARK_MODE, newModeState); // 保存用户选择
 };
 
-// 图片存储优化开关
-const toggleImageStorageOptimization = async () => {
-    const toggle = document.getElementById('image-storage-optimization-toggle');
-    appState.imageStorageOptimization = !appState.imageStorageOptimization;
-    
-    if (appState.imageStorageOptimization) {
-        toggle.classList.add('active');
-    } else {
-        toggle.classList.remove('active');
-    }
-    
-    await dbStorage.set('imageStorageOptimization', appState.imageStorageOptimization);
-    console.log('图片存储优化:', appState.imageStorageOptimization ? '已开启' : '已关闭');
+const migrateAllStoredImages = async (onProgress = () => {}) => {
+    const stats = {
+        processed: 0,
+        deduplicated: 0,
+        originalSize: 0,
+        storedSize: 0,
+        failed: 0
+    };
+
+    const migrateRecord = async record => {
+        if (!record || typeof record !== 'object') return;
+        if (typeof record.url === 'string' && record.url.startsWith('data:image/')) {
+            const originalUrl = record.url;
+            try {
+                const result = await persistImageAsset(originalUrl, {
+                    maxWidth: 512,
+                    maxHeight: 512,
+                    quality: 0.8
+                });
+                record.url = result.url;
+                stats.processed++;
+                stats.originalSize += result.originalSize;
+                stats.storedSize += result.storedSize;
+                if (result.deduplicated) stats.deduplicated++;
+            } catch (error) {
+                record.url = originalUrl;
+                stats.failed++;
+                console.warn('跳过无法迁移的图片:', error);
+            }
+            onProgress({ ...stats });
+        }
+        for (const value of Object.values(record)) {
+            if (value && typeof value === 'object') await migrateRecord(value);
+        }
+    };
+
+    const chats = appState.chats || await dbStorage.get(KEYS.CHATS, {});
+    const stickers = appState.stickers || await dbStorage.get(KEYS.STICKERS, []);
+    const aiStickers = appState.aiStickers || await dbStorage.get(KEYS.AI_STICKERS, []);
+    await migrateRecord(chats);
+    await migrateRecord(stickers);
+    await migrateRecord(aiStickers);
+
+    appState.chats = chats;
+    appState.stickers = stickers;
+    appState.aiStickers = aiStickers;
+    await dbStorage.set(KEYS.CHATS, chats);
+    await dbStorage.set(KEYS.STICKERS, stickers);
+    await dbStorage.set(KEYS.AI_STICKERS, aiStickers);
+    return stats;
 };
+
+const runImageStorageMigration = async () => {
+    if (!confirm('将聊天图片和双方表情包压缩、去重并改为节省空间的存储方式。原图只有成功写入后才会被替换，继续吗？')) return;
+    const button = document.getElementById('image-storage-migrate-btn');
+    const originalText = button?.textContent || '压缩并整理图片';
+    if (button) button.disabled = true;
+    try {
+        const stats = await migrateAllStoredImages(current => {
+            if (button) button.textContent = `处理中… ${current.processed + current.failed}`;
+        });
+        const beforeMB = (stats.originalSize / 1024 / 1024).toFixed(2);
+        const afterMB = (stats.storedSize / 1024 / 1024).toFixed(2);
+        alert(`图片整理完成\n处理：${stats.processed} 张\n重复复用：${stats.deduplicated} 张\n失败：${stats.failed} 张\n本次原始体积：${beforeMB} MB\n新增存储：${afterMB} MB`);
+        renderStickers();
+        renderAiStickers();
+        if (typeof renderManageMyStickers === 'function') renderManageMyStickers();
+        if (typeof renderManageAiStickers === 'function') renderManageAiStickers();
+        if (appState.activeChatId && typeof renderCurrentChat === 'function') renderCurrentChat();
+    } catch (error) {
+        console.error('图片整理失败:', error);
+        alert(`图片整理失败：${error.message}`);
+    } finally {
+        if (button) {
+            button.disabled = false;
+            button.textContent = originalText;
+        }
+    }
+};
+
+window.migrateAllStoredImages = migrateAllStoredImages;
 
 // 清空日记数据
 const clearDiaryData = async () => {
@@ -14357,6 +14569,21 @@ const compressHistoryImages = async () => {
                 console.error(`读取 ${keyName} 失败:`, e);
             }
         }
+
+        try {
+            const imageAssets = await db.imageAssets.toArray();
+            const imageAssetBytes = imageAssets.reduce((sum, asset) => sum + (asset.size || asset.blob?.size || 0), 0);
+            if (imageAssetBytes > 0) {
+                dataSizes.imageAssets = {
+                    size: imageAssetBytes,
+                    sizeKB: (imageAssetBytes / 1024).toFixed(2),
+                    sizeMB: (imageAssetBytes / 1024 / 1024).toFixed(2),
+                    type: `${imageAssets.length} 个独立图片资源`
+                };
+            }
+        } catch (error) {
+            console.warn('读取独立图片资源失败:', error);
+        }
         
         // 按大小排序
         const sorted = Object.entries(dataSizes).sort((a, b) => b[1].size - a[1].size);
@@ -14388,9 +14615,10 @@ const compressHistoryImages = async () => {
             if (!chat.history) continue;
             
             for (const msg of chat.history) {
-                if (msg.content && typeof msg.content === 'string' && msg.content.startsWith('data:image/')) {
+                const imageUrl = typeof msg.content === 'string' ? msg.content : msg.content?.url;
+                if (typeof imageUrl === 'string' && imageUrl.startsWith('data:image/')) {
                     imageCount++;
-                    imageSize += msg.content.length;
+                    imageSize += imageUrl.length;
                 }
             }
         }
@@ -14405,18 +14633,18 @@ const compressHistoryImages = async () => {
         
         if (appState.stickers) {
             for (const sticker of appState.stickers) {
-                if (sticker.image && sticker.image.startsWith('data:image/')) {
+                if (sticker.url && sticker.url.startsWith('data:image/')) {
                     stickerCount++;
-                    stickerSize += sticker.image.length;
+                    stickerSize += sticker.url.length;
                 }
             }
         }
         
         if (appState.aiStickers) {
             for (const sticker of appState.aiStickers) {
-                if (sticker.image && sticker.image.startsWith('data:image/')) {
+                if (sticker.url && sticker.url.startsWith('data:image/')) {
                     stickerCount++;
-                    stickerSize += sticker.image.length;
+                    stickerSize += sticker.url.length;
                 }
             }
         }
@@ -16209,11 +16437,10 @@ document.getElementById('settings-hub-dark-mode-toggle').onclick = toggleDarkMod
 document.getElementById('display-mode-toggle').onclick = toggleDisplayMode;
 document.getElementById('platform-mode-select').addEventListener('change', handlePlatformModeChange);
 document.getElementById('home-time-display-toggle').onclick = toggleHomeTimeDisplay;
-document.getElementById('image-storage-optimization-toggle').onclick = toggleImageStorageOptimization;
+document.getElementById('image-storage-migrate-btn').onclick = runImageStorageMigration;
 document.getElementById('compress-history-images-btn').onclick = compressHistoryImages;
 document.getElementById('clear-diary-btn').onclick = clearDiaryData;
 document.getElementById('clear-forum-btn').onclick = clearForumData;
-document.getElementById('clear-stickers-btn').onclick = clearStickersData;
 document.getElementById('clear-moments-btn').onclick = clearMomentsData;
 
 // 时间显示大小滑块事件
@@ -16315,25 +16542,26 @@ safeSetOnClick('api-settings-back-btn', () => showScreen('settings-hub-screen'))
     document.getElementById('image-upload-input').addEventListener('change', async (event) => { 
         const file = event.target.files[0]; 
         if (!file) return; 
-        const reader = new FileReader(); 
-        reader.onload = async (e) => { 
-            // 压缩聊天图片（1024px 最大尺寸）
-            const compressedImage = await compressImage(e.target.result, {
-                maxWidth: 1024,
-                maxHeight: 1024,
-                quality: 0.85
+        try {
+            const imageUrl = await storeImageAsset(file, {
+                maxWidth: 512,
+                maxHeight: 512,
+                quality: 0.8
             });
             const chat = appState.chats[appState.activeChatId]; 
             if (!chat) return; 
             await checkAndInsertTimestamp(); 
             const imageTimestamp = Date.now(); 
-            const imageData = { type: 'just_image', url: compressedImage }; 
+            const imageData = { type: 'just_image', url: imageUrl };
             appendMessage({ role: 'user', content: imageData, timestamp: imageTimestamp }); 
             chat.history.push({ role: 'user', content: imageData, timestamp: imageTimestamp }); 
             await dbStorage.set(KEYS.CHATS, appState.chats); 
-        }; 
-        reader.readAsDataURL(file); 
-        event.target.value = ''; 
+        } catch (error) {
+            console.error('聊天图片保存失败:', error);
+            alert(`图片保存失败：${error.message}`);
+        } finally {
+            event.target.value = '';
+        }
     });
     document.getElementById('action-send-image-text').onclick = openImageModal; document.getElementById('cancel-image-btn').onclick = closeImageModal; document.getElementById('send-image-btn').onclick = sendImageMessage; document.getElementById('action-send-location').onclick = openLocationModal; document.getElementById('action-send-voice').onclick = openVoiceModal;
 
@@ -16452,24 +16680,22 @@ if (chatImportStickersBtn) {
 const stickerUploadInput = document.getElementById('sticker-upload-input');
 if (stickerUploadInput) {
     stickerUploadInput.addEventListener('change', async (event) => {
-    const file = event.target.files[0];
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onload = async (e) => {
-        // 1. 压缩图片（表情包使用 512px 最大尺寸）
-        const compressedImage = await compressImage(e.target.result, {
-            maxWidth: 512,
-            maxHeight: 512,
-            quality: 0.85
-        });
-        // 2. 将压缩后的图片暂存起来
-        appState.pendingSticker = compressedImage;
-        // 3. 清空命名输入框并打开弹窗
-        document.getElementById('sticker-name-input').value = '';
-        document.getElementById('sticker-name-modal').classList.add('active');
-    };
-    reader.readAsDataURL(file);
-    event.target.value = ''; // 清空，以便下次能选择同一个文件
+        const file = event.target.files[0];
+        if (!file) return;
+        try {
+            appState.pendingSticker = await storeImageAsset(file, {
+                maxWidth: 512,
+                maxHeight: 512,
+                quality: 0.8
+            });
+            document.getElementById('sticker-name-input').value = '';
+            document.getElementById('sticker-name-modal').classList.add('active');
+        } catch (error) {
+            console.error('表情包保存失败:', error);
+            alert(`表情包保存失败：${error.message}`);
+        } finally {
+            event.target.value = '';
+        }
     });
 }
 
@@ -19932,16 +20158,8 @@ const init = async () => {
     // 使用新的设置函数确保数据同步
     setDiaryEntries(diaryEntries);
 
-    // 加载图片存储优化设置
-    appState.imageStorageOptimization = await dbStorage.get('imageStorageOptimization', false);
-    const imageOptToggle = document.getElementById('image-storage-optimization-toggle');
-    if (imageOptToggle) {
-        if (appState.imageStorageOptimization) {
-            imageOptToggle.classList.add('active');
-        } else {
-            imageOptToggle.classList.remove('active');
-        }
-    }
+    // 图片现改为按需一键迁移，不再使用“只保留描述”的开关。
+    appState.imageStorageOptimization = false;
 
     if (appState.personas.ai.length === 0) {
         appState.personas.ai.push(normalizePersonaRecord({ name: '测试AI', content: '你是一个用于测试的ai。', avatar: DEFAULT_AVATAR }, 'ai'))
@@ -20606,7 +20824,7 @@ const createFullBackupEntries = async function* () {
         .filter(key => !DEVICE_LOCAL_BACKUP_KEYS.has(key) && key !== KEYS.FORUM_DATA);
 
     yield ['__metadata', {
-        version: '2.5',
+        version: '2.6',
         exportDate: new Date().toISOString(),
         appVersion: 'AIRP-Enhanced',
         dataFormat: 'gzip-json',
@@ -20616,11 +20834,28 @@ const createFullBackupEntries = async function* () {
 
     for (const key of kvStoreKeys) {
         let data = await dbStorage.get(key);
-        if (key === KEYS.CHATS && data && appState.imageStorageOptimization) {
-            data = sanitizeChatsForOptimizedBackup(data);
-        }
         if (data !== undefined) yield [key, data];
         data = null;
+    }
+
+    try {
+        const imageAssets = await db.imageAssets.toArray();
+        if (imageAssets.length) {
+            const serializedAssets = [];
+            for (const asset of imageAssets) {
+                serializedAssets.push({
+                    id: asset.id,
+                    mimeType: asset.mimeType || asset.blob?.type || 'image/webp',
+                    size: asset.size || asset.blob?.size || 0,
+                    createdAt: asset.createdAt || null,
+                    dataUrl: await imageBlobToDataUrl(asset.blob)
+                });
+                await new Promise(resolve => setTimeout(resolve, 0));
+            }
+            yield ['__imageAssets', serializedAssets];
+        }
+    } catch (error) {
+        console.warn('⚠️ 导出图片资源失败:', error);
     }
 
     const localStorageData = {};
@@ -21063,6 +21298,26 @@ const restoreFullBackupStorage = async (backupData, metadata = null) => {
     const kvStoreKeys = Array.isArray(metadata?.kvStoreKeys)
         ? metadata.kvStoreKeys
         : Object.values(KEYS);
+
+    if (Array.isArray(backupData.__imageAssets)) {
+        for (const asset of backupData.__imageAssets) {
+            if (!asset?.id || !asset.dataUrl) continue;
+            try {
+                const response = await fetch(asset.dataUrl);
+                const blob = await response.blob();
+                await db.imageAssets.put({
+                    id: asset.id,
+                    blob,
+                    mimeType: asset.mimeType || blob.type || 'image/webp',
+                    size: asset.size || blob.size,
+                    createdAt: asset.createdAt || Date.now()
+                });
+                importedCount++;
+            } catch (error) {
+                importErrors.push(`恢复图片资源 ${asset.id} 失败: ${error.message}`);
+            }
+        }
+    }
 
     for (const key of kvStoreKeys) {
         if (typeof key !== 'string' || DEVICE_LOCAL_BACKUP_KEYS.has(key)) continue;

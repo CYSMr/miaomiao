@@ -768,19 +768,14 @@
                     <div class="toggle-knob"></div>
                 </div>
             </div>
-            <!-- 新增：图片存储优化开关 -->
             <div class="settings-item" style="flex-direction: column; align-items: flex-start; gap: 8px;">
-                <div style="display: flex; justify-content: space-between; align-items: center; width: 100%;">
-                    <div>
-                        <span class="item-label">图片存储优化</span>
-                        <p style="font-size: 12px; color: var(--text-secondary); margin: 4px 0 0 0;">
-                            开启后，聊天图片只保留AI描述文字，不保存原图
-                        </p>
-                    </div>
-                    <div id="image-storage-optimization-toggle" class="toggle-switch">
-                        <div class="toggle-knob"></div>
-                    </div>
-                </div>
+                <span class="item-label">图片存储整理</span>
+                <p style="font-size: 12px; color: var(--text-secondary); margin: 0;">
+                    压缩并去重聊天图片与双方表情包，保留真实图片和 GIF 动画；AI 仍可看到图片。
+                </p>
+                <button id="image-storage-migrate-btn" style="width: 100%; padding: 10px; background: #4CAF50; color: white; border: none; border-radius: 8px; font-size: 14px; cursor: pointer;">
+                    压缩并整理图片
+                </button>
                 <button id="compress-history-images-btn" style="width: 100%; padding: 10px; background: var(--primary-color); color: white; border: none; border-radius: 8px; font-size: 14px; cursor: pointer; margin-top: 8px;">
                     数据分析
                 </button>
@@ -790,9 +785,6 @@
                     </button>
                     <button id="clear-forum-btn" style="padding: 8px; background: #ff6b6b; color: white; border: none; border-radius: 6px; font-size: 13px; cursor: pointer;">
                         清空论坛
-                    </button>
-                    <button id="clear-stickers-btn" style="padding: 8px; background: #4CAF50; color: white; border: none; border-radius: 6px; font-size: 13px; cursor: pointer;">
-                        压缩表情包
                     </button>
                     <button id="clear-moments-btn" style="padding: 8px; background: #ff6b6b; color: white; border: none; border-radius: 6px; font-size: 13px; cursor: pointer;">
                         清空朋友圈

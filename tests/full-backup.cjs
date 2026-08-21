@@ -15,6 +15,7 @@ const APP_URL = process.env.APP_URL || 'http://127.0.0.1:4183';
         await page.waitForFunction(() => typeof db !== 'undefined' && db?.isOpen?.());
 
         const backup = await page.evaluate(async () => {
+            await db.imageAssets.clear();
             await db.kvStore.bulkPut([
                 { key: 'minimaxVoiceConfig', value: { apiKey: 'voice-secret', groupId: 'voice-group' } },
                 { key: 'mcp_secret_tokens_v1', value: { mcp_demo: 'mcp-secret' } },
@@ -27,6 +28,14 @@ const APP_URL = process.env.APP_URL || 'http://127.0.0.1:4183';
                 new File([new Uint8Array([1, 2, 3, 4])], 'tiny.bin', { type: 'application/octet-stream' }),
                 'application/octet-stream'
             );
+            const imageAssetUrl = await window.storeImageAsset(
+                new Blob([new Uint8Array([71, 73, 70, 56, 57, 97])], { type: 'image/gif' }),
+                { compress: false }
+            );
+            await db.kvStore.put({
+                key: 'chats',
+                value: { demo: { history: [{ role: 'user', content: { type: 'sticker', url: imageAssetUrl } }] } }
+            });
 
             const backup = {};
             for await (const [key, value] of window.createFullBackupEntries()) {
@@ -43,6 +52,8 @@ const APP_URL = process.env.APP_URL || 'http://127.0.0.1:4183';
         assert.equal(backup.__localStorage.musicTheme, 'vinyl');
         assert.equal(backup.__playerMedia.name, 'tiny.bin');
         assert.match(backup.__playerMedia.dataUrl, /^data:application\/octet-stream;base64,/);
+        assert.equal(backup.__imageAssets.length, 1);
+        assert.match(backup.__imageAssets[0].dataUrl, /^data:image\/gif;base64,/);
 
         const restored = await page.evaluate(async backupData => {
             await db.kvStore.bulkDelete([
@@ -50,6 +61,7 @@ const APP_URL = process.env.APP_URL || 'http://127.0.0.1:4183';
                 'mcp_secret_tokens_v1',
                 'imageStorageOptimization'
             ]);
+            await db.imageAssets.clear();
             await db.kvStore.put({ key: 'push_subscription', value: { endpoint: 'keep-current-device' } });
             localStorage.removeItem('customDialogSummaryPrompt');
             localStorage.removeItem('musicTheme');
@@ -65,7 +77,9 @@ const APP_URL = process.env.APP_URL || 'http://127.0.0.1:4183';
                 summaryPrompt: localStorage.getItem('customDialogSummaryPrompt'),
                 musicTheme: localStorage.getItem('musicTheme'),
                 mediaName: media?.name,
-                mediaSize: media?.blob?.size
+                mediaSize: media?.blob?.size,
+                assetCount: await db.imageAssets.count(),
+                assetBytes: Array.from(new Uint8Array(await (await db.imageAssets.toCollection().first()).blob.arrayBuffer()))
             };
         }, backup);
 
@@ -77,6 +91,8 @@ const APP_URL = process.env.APP_URL || 'http://127.0.0.1:4183';
         assert.equal(restored.musicTheme, 'vinyl');
         assert.equal(restored.mediaName, 'tiny.bin');
         assert.equal(restored.mediaSize, 4);
+        assert.equal(restored.assetCount, 1);
+        assert.deepEqual(restored.assetBytes, [71, 73, 70, 56, 57, 97]);
 
         console.log('PASS: full backup round-trips secrets and local settings but excludes device push state');
     } finally {
