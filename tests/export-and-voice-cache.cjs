@@ -52,6 +52,7 @@ const APP_URL = process.env.APP_URL || 'http://127.0.0.1:4183';
                 const exportProgress = window.showBackupExportProgress();
                 const initialProgressText = document.getElementById('backup-export-progress').textContent;
                 exportProgress.close();
+                const importFileAccept = document.getElementById('import-file-input').getAttribute('accept');
                 const originalChats = {
                     chat_1: {
                         history: [
@@ -124,6 +125,7 @@ const APP_URL = process.env.APP_URL || 'http://127.0.0.1:4183';
                     blobText,
                     deliveryMethod,
                     initialProgressText,
+                    importFileAccept,
                     optimizedLocalImageType: optimizedChats.chat_1.history[0].content.type,
                     optimizedLocalImageText: optimizedChats.chat_1.history[0].content.text,
                     optimizedRemoteImageUrl: optimizedChats.chat_1.history[1].content.url,
@@ -151,6 +153,7 @@ const APP_URL = process.env.APP_URL || 'http://127.0.0.1:4183';
         assert.equal(result.blobText, '{"greeting":"喵","nested":{"ok":true}}');
         assert.equal(result.deliveryMethod, 'shared');
         assert.equal(result.initialProgressText.includes('300MB'), false, 'export hint must not assume every backup is 300 MB');
+        assert.equal(result.importFileAccept, null, 'the iOS file picker must not filter out .json.gz backups');
         assert.equal(result.optimizedLocalImageType, 'image');
         assert.match(result.optimizedLocalImageText, /原图未保存/);
         assert.equal(result.optimizedRemoteImageUrl, 'https://example.com/image.webp');
