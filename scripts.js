@@ -20290,18 +20290,35 @@ const createCompactBackupBlob = (backupData) => {
     return new Blob(parts, { type: 'application/json' });
 };
 
-const downloadBackupBlob = (blob, filename) => {
+const downloadBackupBlob = async (blob, filename) => {
+    // iOS standalone PWA 对 blob: + target="_blank" 的处理不稳定，可能直接把存档
+    // 当成新页面打开。优先交给系统文件分享；桌面端再回退为普通下载。
+    if (typeof File === 'function' && navigator.share && navigator.canShare) {
+        const file = new File([blob], filename, { type: blob.type || 'application/json' });
+        try {
+            if (navigator.canShare({ files: [file] })) {
+                await navigator.share({
+                    files: [file],
+                    title: '喵喵机存档'
+                });
+                return 'shared';
+            }
+        } catch (error) {
+            if (error?.name === 'AbortError') return 'cancelled';
+            console.warn('系统分享存档失败，改用普通下载:', error);
+        }
+    }
+
     const url = URL.createObjectURL(blob);
     const anchor = document.createElement('a');
     anchor.href = url;
     anchor.download = filename;
-    anchor.target = '_blank';
-    anchor.rel = 'noopener';
     document.body.appendChild(anchor);
     anchor.click();
     anchor.remove();
     // iOS PWA 需要在点击后继续读取 Blob；立即释放会导致下载失败或当前页面重载。
     setTimeout(() => URL.revokeObjectURL(url), 60_000);
+    return 'downloaded';
 };
 
 window.createCompactBackupBlob = createCompactBackupBlob;
@@ -20454,8 +20471,8 @@ const exportDataSimple = async () => {
 
     const timestamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
     const blob = createCompactBackupBlob(backupData);
-    downloadBackupBlob(blob, `AIRP-Backup-${timestamp}.json`);
-    alert('资料已开始汇出！');
+    const deliveryMethod = await downloadBackupBlob(blob, `AIRP-Backup-${timestamp}.json`);
+    if (deliveryMethod === 'downloaded') alert('资料已开始汇出！');
 };
 
 /**

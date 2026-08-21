@@ -16,6 +16,7 @@ const APP_URL = process.env.APP_URL || 'http://127.0.0.1:4183';
 
         const result = await page.evaluate(async () => {
             const clickedAnchors = [];
+            const sharedFiles = [];
             const revokedUrls = [];
             const originalClick = HTMLAnchorElement.prototype.click;
             const originalCreateObjectURL = URL.createObjectURL;
@@ -27,10 +28,23 @@ const APP_URL = process.env.APP_URL || 'http://127.0.0.1:4183';
             URL.createObjectURL = () => 'blob:test-backup';
             URL.revokeObjectURL = url => revokedUrls.push(url);
 
+            Object.defineProperty(navigator, 'canShare', {
+                configurable: true,
+                value: data => Array.isArray(data?.files) && data.files.length === 1
+            });
+            Object.defineProperty(navigator, 'share', {
+                configurable: true,
+                value: async data => sharedFiles.push({
+                    name: data.files[0].name,
+                    type: data.files[0].type,
+                    size: data.files[0].size
+                })
+            });
+
             try {
                 const blob = window.createCompactBackupBlob({ greeting: '喵', nested: { ok: true } });
                 const blobText = await blob.text();
-                window.downloadBackupBlob(blob, 'backup.json');
+                const deliveryMethod = await window.downloadBackupBlob(blob, 'backup.json');
 
                 const fakeCache = {
                     deleted: [],
@@ -60,6 +74,8 @@ const APP_URL = process.env.APP_URL || 'http://127.0.0.1:4183';
 
                 return {
                     blobText,
+                    deliveryMethod,
+                    sharedFiles,
                     clickedAnchors,
                     revokedImmediately: revokedUrls.length > 0,
                     deleted: fakeCache.deleted,
@@ -73,9 +89,13 @@ const APP_URL = process.env.APP_URL || 'http://127.0.0.1:4183';
         });
 
         assert.equal(result.blobText, '{"greeting":"喵","nested":{"ok":true}}');
-        assert.equal(result.clickedAnchors.length, 1);
-        assert.equal(result.clickedAnchors[0].target, '_blank', 'backup must never replace the PWA page');
-        assert.equal(result.clickedAnchors[0].download, 'backup.json');
+        assert.equal(result.deliveryMethod, 'shared');
+        assert.deepEqual(result.sharedFiles, [{
+            name: 'backup.json',
+            type: 'application/json',
+            size: Buffer.byteLength(result.blobText)
+        }]);
+        assert.equal(result.clickedAnchors.length, 0, 'native file sharing must avoid blob navigation');
         assert.equal(result.revokedImmediately, false, 'blob URL must survive long enough for iOS to consume it');
         assert.deepEqual(result.deleted, [
             'https://cache/0',
