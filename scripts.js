@@ -14504,8 +14504,22 @@ const migrateAllStoredImages = async (onProgress = () => {}) => {
     await waitForDatabase();
     const rows = await db.kvStore.toArray();
     for (const row of rows) {
+        if (row.key === KEYS.DIARY_ENTRIES || row.key === KEYS.DEFAULT_BACKGROUND_TEXTURE) continue;
         const processedBefore = stats.processed;
-        if (row.key === KEYS.CUSTOM_ICONS && row.value && typeof row.value === 'object') {
+        if (row.key === KEYS.CHATS && row.value && typeof row.value === 'object') {
+            const wallpapers = new Map();
+            const chatsToMigrate = { ...row.value };
+            for (const [chatId, chat] of Object.entries(chatsToMigrate)) {
+                if (!chat || typeof chat !== 'object') continue;
+                chatsToMigrate[chatId] = { ...chat };
+                if (Object.prototype.hasOwnProperty.call(chat, 'wallpaper')) {
+                    wallpapers.set(chatId, chat.wallpaper);
+                    delete chatsToMigrate[chatId].wallpaper;
+                }
+            }
+            row.value = await migrateValue(chatsToMigrate);
+            for (const [chatId, wallpaper] of wallpapers) row.value[chatId].wallpaper = wallpaper;
+        } else if (row.key === KEYS.CUSTOM_ICONS && row.value && typeof row.value === 'object') {
             const listBackground = row.value['icon-list-background'];
             const iconsToMigrate = { ...row.value };
             delete iconsToMigrate['icon-list-background'];
@@ -14568,7 +14582,7 @@ const migrateAllStoredImages = async (onProgress = () => {}) => {
 };
 
 const runImageStorageMigration = async () => {
-    if (!confirm('将聊天图片、日记图片、论坛图片、头像和表情包统一压缩去重。只有成功写入后才会替换原数据，继续吗？')) return;
+    if (!confirm('将聊天消息图片、论坛图片、头像和表情包统一压缩去重。只有成功写入后才会替换原数据，继续吗？')) return;
     const button = document.getElementById('image-storage-migrate-btn');
     const originalText = button?.textContent || '压缩并整理图片';
     if (button) button.disabled = true;

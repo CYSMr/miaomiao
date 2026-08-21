@@ -50,6 +50,7 @@ const APP_URL = process.env.APP_URL || 'http://127.0.0.1:4183';
             await dbStorage.set(KEYS.DIARY_ENTRIES, [{ id: 1, avatar: source, content: '日记' }]);
             await dbStorage.set(KEYS.FORUM_DATA, { posts: [{ authorAvatar: source, image: source }] });
             await dbStorage.set(KEYS.HOME_WALLPAPER, source);
+            await dbStorage.set(KEYS.DEFAULT_BACKGROUND_TEXTURE, source);
             await db.kvStore.put({ key: 'unlisted_storage_probe', value: { audio: 'data:audio/wav;base64,AAAA' } });
 
             const forumDb = await openForumDB();
@@ -73,6 +74,7 @@ const APP_URL = process.env.APP_URL || 'http://127.0.0.1:4183';
             const storedDiary = await dbStorage.get(KEYS.DIARY_ENTRIES, []);
             const storedForum = await dbStorage.get(KEYS.FORUM_DATA, {});
             const storedWallpaper = await dbStorage.get(KEYS.HOME_WALLPAPER, '');
+            const storedDefaultBackground = await dbStorage.get(KEYS.DEFAULT_BACKGROUND_TEXTURE, '');
             const migratedForumDb = await openForumDB();
             const forumRead = migratedForumDb.transaction([FORUM_STORE_NAME], 'readonly');
             const independentForumRow = await new Promise((resolve, reject) => {
@@ -118,6 +120,7 @@ const APP_URL = process.env.APP_URL || 'http://127.0.0.1:4183';
                 independentForumAvatar: independentForumRow.data.posts[0].authorAvatar,
                 independentForumImage: independentForumRow.data.posts[0].image,
                 homeWallpaper: storedWallpaper,
+                defaultBackground: storedDefaultBackground,
                 rowCount: await db.imageAssets.count(),
                 apiUrl: apiMessages[0].content[0].image_url.url,
                 hydratedImage: imageProbe.src,
@@ -126,6 +129,7 @@ const APP_URL = process.env.APP_URL || 'http://127.0.0.1:4183';
                 analysisSorted: analysis.entries.every((entry, index, entries) => index === 0 || entries[index - 1].size >= entry.size),
                 analysisHasAssets: analysis.entries.some(entry => entry.key === 'imageAssets' && entry.imageAssetCount >= 2),
                 analysisDiaryRefs: analysis.entries.find(entry => entry.key === KEYS.DIARY_ENTRIES)?.assetRefCount || 0,
+                analysisDiaryBase64: analysis.entries.find(entry => entry.key === KEYS.DIARY_ENTRIES)?.base64ImageCount || 0,
                 analysisHasUnlistedKey: analysis.entries.some(entry => entry.key === 'unlisted_storage_probe' && entry.base64AudioCount === 1),
                 analysisIndependentForumRefs: analysis.entries.find(entry => entry.key === 'ForumDatabase/forumState')?.assetRefCount || 0,
                 analysisButtonDisplay: getComputedStyle(analysisButton).display,
@@ -156,15 +160,16 @@ const APP_URL = process.env.APP_URL || 'http://127.0.0.1:4183';
         assert.equal(result.gifType, 'image/gif');
         assert.ok(result.chatUrls.every(url => url === result.first));
         assert.equal(result.chatAvatar, result.first);
-        assert.equal(result.chatWallpaper, result.first);
+        assert.equal(result.chatWallpaper, result.originalSource);
         assert.equal(result.stickerUrl, result.first);
         assert.equal(result.aiStickerUrl, result.first);
-        assert.equal(result.diaryAvatar, result.first);
+        assert.equal(result.diaryAvatar, result.originalSource);
         assert.equal(result.forumAvatar, result.first);
         assert.equal(result.forumImage, result.first);
         assert.equal(result.independentForumAvatar, result.first);
         assert.equal(result.independentForumImage, result.first);
         assert.equal(result.homeWallpaper, result.first);
+        assert.equal(result.defaultBackground, result.originalSource);
         assert.equal(result.storedListBackground, result.originalSource);
         assert.match(result.immediateListBackground, /data:image/);
         assert.equal(reloadedStyle.asset, result.originalSource);
@@ -177,7 +182,8 @@ const APP_URL = process.env.APP_URL || 'http://127.0.0.1:4183';
         assert.ok(result.analysisEntryCount > 3);
         assert.equal(result.analysisSorted, true);
         assert.equal(result.analysisHasAssets, true);
-        assert.ok(result.analysisDiaryRefs >= 1);
+        assert.equal(result.analysisDiaryRefs, 0);
+        assert.ok(result.analysisDiaryBase64 >= 1);
         assert.equal(result.analysisHasUnlistedKey, true);
         assert.ok(result.analysisIndependentForumRefs >= 1);
         assert.notEqual(result.analysisButtonDisplay, 'none');
