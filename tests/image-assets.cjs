@@ -66,6 +66,10 @@ const APP_URL = process.env.APP_URL || 'http://127.0.0.1:4183';
             forumDb.close();
 
             const migration = await window.migrateAllStoredImages();
+            const storedCustomIcons = await dbStorage.get(KEYS.CUSTOM_ICONS, {});
+            const immediateListBackground = getComputedStyle(
+                document.getElementById('chat-list-container')
+            ).backgroundImage;
             const storedDiary = await dbStorage.get(KEYS.DIARY_ENTRIES, []);
             const storedForum = await dbStorage.get(KEYS.FORUM_DATA, {});
             const storedWallpaper = await dbStorage.get(KEYS.HOME_WALLPAPER, '');
@@ -94,12 +98,15 @@ const APP_URL = process.env.APP_URL || 'http://127.0.0.1:4183';
             document.head.appendChild(hidingStyle);
             const analysisButton = document.getElementById('compress-history-images-btn');
             return {
+                originalSource: source,
                 first,
                 second,
                 rowsAfterDuplicate,
                 dataUrl,
                 gifType: gifRow.mimeType,
                 migration,
+                storedListBackground: storedCustomIcons['icon-list-background'],
+                immediateListBackground,
                 chatUrls: appState.chats.demo.history.map(item => item.content.url),
                 chatAvatar: appState.chats.demo.personas.ai.avatar,
                 chatWallpaper: appState.chats.demo.wallpaper,
@@ -133,7 +140,7 @@ const APP_URL = process.env.APP_URL || 'http://127.0.0.1:4183';
         await page.reload({ waitUntil: 'domcontentloaded' });
         await page.waitForFunction(() => typeof db !== 'undefined' && db?.isOpen?.());
         await page.waitForFunction(() => appState.customIcons?.['icon-list-background']);
-        await page.waitForFunction(() => document.getElementById('custom-icon-styles')?.textContent.includes('blob:'));
+        await page.waitForFunction(() => document.getElementById('custom-icon-styles')?.textContent.includes('data:image'));
         const reloadedStyle = await page.evaluate(() => {
             const listBackground = document.getElementById('chat-list-container');
             return {
@@ -158,8 +165,10 @@ const APP_URL = process.env.APP_URL || 'http://127.0.0.1:4183';
         assert.equal(result.independentForumAvatar, result.first);
         assert.equal(result.independentForumImage, result.first);
         assert.equal(result.homeWallpaper, result.first);
-        assert.equal(reloadedStyle.asset, result.first);
-        assert.match(reloadedStyle.rendered, /blob:/);
+        assert.equal(result.storedListBackground, result.originalSource);
+        assert.match(result.immediateListBackground, /data:image/);
+        assert.equal(reloadedStyle.asset, result.originalSource);
+        assert.match(reloadedStyle.rendered, /data:image/);
         assert.ok(result.rowCount >= 2);
         assert.equal(result.migration.failed, 0);
         assert.match(result.apiUrl, /^data:image\/webp;base64,/);

@@ -14505,7 +14505,15 @@ const migrateAllStoredImages = async (onProgress = () => {}) => {
     const rows = await db.kvStore.toArray();
     for (const row of rows) {
         const processedBefore = stats.processed;
-        row.value = await migrateValue(row.value);
+        if (row.key === KEYS.CUSTOM_ICONS && row.value && typeof row.value === 'object') {
+            const listBackground = row.value['icon-list-background'];
+            const iconsToMigrate = { ...row.value };
+            delete iconsToMigrate['icon-list-background'];
+            row.value = await migrateValue(iconsToMigrate);
+            if (listBackground) row.value['icon-list-background'] = listBackground;
+        } else {
+            row.value = await migrateValue(row.value);
+        }
         if (stats.processed > processedBefore) await db.kvStore.put(row);
     }
 
@@ -14554,6 +14562,7 @@ const migrateAllStoredImages = async (onProgress = () => {}) => {
     appState.topBarTexture = await dbStorage.get(KEYS.TOP_BAR_TEXTURE, appState.topBarTexture);
     appState.bottomBarTexture = await dbStorage.get(KEYS.BOTTOM_BAR_TEXTURE, appState.bottomBarTexture);
     setDiaryEntries(await dbStorage.get(KEYS.DIARY_ENTRIES, []));
+    await applyCustomIconStyles();
     await hydrateImageAssetReferences(document);
     return stats;
 };
