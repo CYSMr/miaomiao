@@ -459,6 +459,25 @@ const KEYS = {
 const MCP_SECRET_STORAGE_KEY = 'mcp_secret_tokens_v1';
 const MCP_PROTOCOL_VERSION = '2025-03-26';
 const MCP_DEFAULT_TIMEOUT_MS = 45000;
+const DEVICE_LOCAL_BACKUP_KEYS = new Set([
+    KEYS.PUSH_SUBSCRIPTION,
+    KEYS.PUSH_PERMISSION_STATUS
+]);
+const LOCAL_STORAGE_BACKUP_KEYS = [
+    'viewMode',
+    'farm_user_id',
+    'aiMomentsSettings',
+    'backgroundActivitySettings',
+    'playerGifUrl',
+    'musicTheme',
+    'musicBackgroundUrl',
+    'customDialogSummaryPrompt',
+    'customCallSummaryPrompt',
+    'customRefineSummaryPrompt',
+    'momentsActivitySettings',
+    'diaryEntries',
+    'forum_data'
+];
 
 // === 播放列表弹窗函数（提前定义以避免作用域问题）===
 function openPlaylistSheet() {
@@ -20541,97 +20560,121 @@ window.downloadBackupBlob = downloadBackupBlob;
 window.presentBackupSaveBlob = presentBackupSaveBlob;
 window.showBackupExportProgress = showBackupExportProgress;
 
-const exportDataSimple = async () => {
-    // 1. 定义需要备份的所有资料的 KEY
-    const keysToExport = [
-        KEYS.API, KEYS.API_PRESETS, KEYS.PRIMARY_API, KEYS.SECONDARY_API, KEYS.ETHICAL_BYPASS,
-        KEYS.MCP_CONFIGS, KEYS.MCP_TRACE_VISIBLE,
-        KEYS.CHATS, KEYS.CONTACTS, KEYS.PERSONA_AI, KEYS.PERSONA_MY,
-        KEYS.HOME_WALLPAPER, KEYS.HOME_TIME_DISPLAY, KEYS.HOME_TIME_SIZE, KEYS.MOMENTS_DATA, KEYS.DECORATIVE_WIDGET_IMAGES,
-        KEYS.STICKERS, KEYS.AI_STICKERS, KEYS.PROMPTS, KEYS.DARK_MODE, 
-        KEYS.PUBLIC_ACCOUNT_POSTS, KEYS.CUSTOM_ICONS, KEYS.CUSTOM_FONT_URL,
-        KEYS.CUSTOM_FONT_FAMILY, KEYS.CUSTOM_CSS, KEYS.CUSTOM_GLOBAL_CSS,
-        KEYS.GLOBAL_FONT_SIZE, KEYS.BUBBLE_SIZE, KEYS.PLAYLIST,
-        KEYS.DEFAULT_BACKGROUND_TEXTURE, KEYS.TOP_BAR_TEXTURE, KEYS.BOTTOM_BAR_TEXTURE,
-        KEYS.DIARY_ENTRIES,  // 添加日记数据导出
-        KEYS.WORK_BACKGROUND  // 添加打工背景图片导出
-        // 包含所有用户数据和美化设置，包括API预设
-    ];
+const blobToDataUrl = (blob) => new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = () => reject(reader.error || new Error('本地媒体读取失败'));
+    reader.readAsDataURL(blob);
+});
 
+const readForumDataForBackup = async () => {
+    let forumData = null;
+    try {
+        const forumDb = await new Promise((resolve, reject) => {
+            const request = indexedDB.open('ForumDatabase', 1);
+            request.onerror = () => reject(request.error);
+            request.onsuccess = () => resolve(request.result);
+            request.onupgradeneeded = event => {
+                const openedDb = event.target.result;
+                if (!openedDb.objectStoreNames.contains('forumData')) {
+                    openedDb.createObjectStore('forumData', { keyPath: 'id' });
+                }
+            };
+        });
+        const transaction = forumDb.transaction(['forumData'], 'readonly');
+        forumData = await new Promise((resolve, reject) => {
+            const request = transaction.objectStore('forumData').get('forumState');
+            request.onsuccess = () => resolve(request.result?.data || null);
+            request.onerror = () => reject(request.error);
+        });
+        forumDb.close();
+    } catch (error) {
+        console.warn('⚠️ 读取论坛数据失败，尝试旧存储:', error);
+    }
+    if (!forumData) {
+        const legacyForumData = localStorage.getItem('forum_data');
+        if (legacyForumData) forumData = JSON.parse(legacyForumData);
+    }
+    if (!forumData) forumData = await dbStorage.get(KEYS.FORUM_DATA, null);
+    return forumData;
+};
+
+const createFullBackupEntries = async function* () {
+    await waitForDatabase();
+    const kvStoreKeys = (await db.kvStore.toCollection().primaryKeys())
+        .filter(key => typeof key === 'string')
+        .filter(key => !DEVICE_LOCAL_BACKUP_KEYS.has(key) && key !== KEYS.FORUM_DATA);
+
+    yield ['__metadata', {
+        version: '2.5',
+        exportDate: new Date().toISOString(),
+        appVersion: 'AIRP-Enhanced',
+        dataFormat: 'gzip-json',
+        description: '喵喵机全局存档 - 完整资料版',
+        kvStoreKeys
+    }];
+
+    for (const key of kvStoreKeys) {
+        let data = await dbStorage.get(key);
+        if (key === KEYS.CHATS && data && appState.imageStorageOptimization) {
+            data = sanitizeChatsForOptimizedBackup(data);
+        }
+        if (data !== undefined) yield [key, data];
+        data = null;
+    }
+
+    const localStorageData = {};
+    for (const key of LOCAL_STORAGE_BACKUP_KEYS) {
+        const value = localStorage.getItem(key);
+        if (value !== null) localStorageData[key] = value;
+    }
+    yield ['__localStorage', localStorageData];
+
+    try {
+        const playerMedia = await getLocalPlayerMedia();
+        if (playerMedia?.blob) {
+            yield ['__playerMedia', {
+                name: playerMedia.name || '自定义素材',
+                type: playerMedia.type || playerMedia.blob.type || 'application/octet-stream',
+                savedAt: playerMedia.savedAt || null,
+                dataUrl: await blobToDataUrl(playerMedia.blob)
+            }];
+        }
+    } catch (error) {
+        console.warn('⚠️ 导出播放器本地素材失败:', error);
+    }
+
+    try {
+        const walletData = await db.wallet.get('main');
+        if (walletData) yield ['wallet', walletData];
+    } catch (error) {
+        console.warn('⚠️ 导出钱包数据失败:', error);
+    }
+
+    try {
+        const shopItems = await db.shopItems.toArray();
+        if (shopItems?.length) yield ['shopItems', shopItems];
+    } catch (error) {
+        console.warn('⚠️ 导出商店物品失败:', error);
+    }
+
+    const farmUserId = localStorage.getItem('farm_user_id');
+    if (farmUserId) yield ['farmUserId', farmUserId];
+
+    const forumData = await readForumDataForBackup();
+    if (forumData) yield ['forum_data', forumData];
+};
+
+window.createFullBackupEntries = createFullBackupEntries;
+
+const exportDataSimple = async () => {
     if (typeof CompressionStream === 'function') {
         const progress = showBackupExportProgress();
         // 先让 iOS 把进度层绘制出来，再开始处理大量数据。
         await new Promise(resolve => requestAnimationFrame(() => setTimeout(resolve, 0)));
-        async function* backupEntries() {
-            yield ['__metadata', {
-                version: '2.4',
-                exportDate: new Date().toISOString(),
-                appVersion: 'AIRP-Enhanced',
-                dataFormat: 'gzip-json',
-                description: '喵喵机全局存档 - 流式压缩版'
-            }];
-
-            for (const key of keysToExport) {
-                let data = await dbStorage.get(key);
-                if (key === KEYS.MCP_CONFIGS && data) data = sanitizeMcpConfigsForBackup(data);
-                if (key === KEYS.CHATS && data && appState.imageStorageOptimization) {
-                    data = sanitizeChatsForOptimizedBackup(data);
-                }
-                if (data !== undefined) yield [key, data];
-                data = null;
-            }
-
-            try {
-                await waitForDatabase();
-                const walletData = await db.wallet.get('main');
-                if (walletData) yield ['wallet', walletData];
-            } catch (error) {
-                console.warn('⚠️ 导出钱包数据失败:', error);
-            }
-            try {
-                await waitForDatabase();
-                const shopItems = await db.shopItems.toArray();
-                if (shopItems?.length) yield ['shopItems', shopItems];
-            } catch (error) {
-                console.warn('⚠️ 导出商店物品失败:', error);
-            }
-
-            const farmUserId = localStorage.getItem('farm_user_id');
-            if (farmUserId) yield ['farmUserId', farmUserId];
-
-            let forumData = null;
-            try {
-                const forumDb = await new Promise((resolve, reject) => {
-                    const request = indexedDB.open('ForumDatabase', 1);
-                    request.onerror = () => reject(request.error);
-                    request.onsuccess = () => resolve(request.result);
-                    request.onupgradeneeded = event => {
-                        const openedDb = event.target.result;
-                        if (!openedDb.objectStoreNames.contains('forumData')) {
-                            openedDb.createObjectStore('forumData', { keyPath: 'id' });
-                        }
-                    };
-                });
-                const transaction = forumDb.transaction(['forumData'], 'readonly');
-                forumData = await new Promise((resolve, reject) => {
-                    const request = transaction.objectStore('forumData').get('forumState');
-                    request.onsuccess = () => resolve(request.result?.data || null);
-                    request.onerror = () => reject(request.error);
-                });
-                forumDb.close();
-            } catch (error) {
-                console.warn('⚠️ 读取论坛数据失败，尝试旧存储:', error);
-            }
-            if (!forumData) {
-                const legacyForumData = localStorage.getItem('forum_data');
-                if (legacyForumData) forumData = JSON.parse(legacyForumData);
-            }
-            if (forumData) yield ['forum_data', forumData];
-        }
-
         try {
             const compressedBlob = await createStreamingJsonGzipBlob(
-                backupEntries(),
+                createFullBackupEntries(),
                 processedChars => progress.update(processedChars)
             );
             progress.setStatus('压缩完成，正在准备保存…');
@@ -20646,134 +20689,8 @@ const exportDataSimple = async () => {
             return;
         }
     }
-    
-    const backupData = {
-        // 添加版本信息和元数据，便于将来的兼容性处理
-        __metadata: {
-            version: '2.3',  // 更新版本号，标识包含钱包、商店、游戏账号和论坛数据
-            exportDate: new Date().toISOString(),
-            appVersion: 'AIRP-Enhanced',
-            dataFormat: 'current',
-            description: '喵喵机全局存档 - 包含所有用户数据、钱包、商店、游戏账号、论坛和美化设置'
-        }
-    };
-    console.log("正在从 Key-Value 储存中汇出资料...");
-
-    // 2. 循环读取每一项资料
-    for (const key of keysToExport) {
-        // 使用您现有的 dbStorage.get 函数来读取资料
-        const data = await dbStorage.get(key);
-        if (data !== undefined) { // 只备份有资料的栏位
-            backupData[key] = data;
-        }
-    }
-
-    // 3. 导出钱包数据（从 db.wallet 表）
-    try {
-        await waitForDatabase();
-        const walletData = await db.wallet.get('main');
-        if (walletData) {
-            backupData.wallet = walletData;
-            console.log("✅ 已导出钱包数据");
-        }
-    } catch (error) {
-        console.warn("⚠️ 导出钱包数据失败:", error);
-    }
-
-    // 4. 导出商店物品数据（从 db.shopItems 表）
-    try {
-        await waitForDatabase();
-        const shopItems = await db.shopItems.toArray();
-        if (shopItems && shopItems.length > 0) {
-            backupData.shopItems = shopItems;
-            console.log(`✅ 已导出商店物品数据: ${shopItems.length} 个商品`);
-        }
-    } catch (error) {
-        console.warn("⚠️ 导出商店物品数据失败:", error);
-    }
-
-    // 5. 导出开心农场游戏ID（从 localStorage）
-    try {
-        const farmUserId = localStorage.getItem('farm_user_id');
-        if (farmUserId) {
-            backupData.farmUserId = farmUserId;
-            console.log(`✅ 已导出游戏账号ID: ${farmUserId}`);
-        } else {
-            console.log("ℹ️ 未检测到游戏账号（可能尚未玩过游戏）");
-        }
-    } catch (error) {
-        console.warn("⚠️ 导出游戏账号ID失败:", error);
-    }
-
-    // 6. 导出论坛数据（从 IndexedDB）
-    try {
-        // 从 IndexedDB 读取最新的论坛数据（使用字面值，避免依赖未定义的常量）
-        const FORUM_DB_NAME = 'ForumDatabase';
-        const FORUM_DB_VERSION = 1;
-        const FORUM_STORE_NAME = 'forumData';
-        
-        const db = await new Promise((resolve, reject) => {
-            const request = indexedDB.open(FORUM_DB_NAME, FORUM_DB_VERSION);
-            request.onerror = () => reject(request.error);
-            request.onsuccess = () => resolve(request.result);
-            request.onupgradeneeded = (event) => {
-                const db = event.target.result;
-                if (!db.objectStoreNames.contains(FORUM_STORE_NAME)) {
-                    db.createObjectStore(FORUM_STORE_NAME, { keyPath: 'id' });
-                }
-            };
-        });
-        
-        const transaction = db.transaction([FORUM_STORE_NAME], 'readonly');
-        const store = transaction.objectStore(FORUM_STORE_NAME);
-        
-        const forumData = await new Promise((resolve, reject) => {
-            const request = store.get('forumState');
-            request.onsuccess = () => {
-                if (request.result && request.result.data) {
-                    resolve(request.result.data);
-                } else {
-                    resolve(null);
-                }
-            };
-            request.onerror = () => reject(request.error);
-        });
-        
-        db.close();
-        
-        if (forumData) {
-            backupData.forum_data = forumData;
-            console.log(`✅ 已导出论坛数据: ${forumData.posts?.length || 0} 条帖子, ${forumData.fanfics?.length || 0} 篇同人, ${forumData.r18Posts?.length || 0} 条R18帖子`);
-        } else {
-            // 回退到 localStorage（向后兼容）
-            const forumDataStr = localStorage.getItem('forum_data');
-            if (forumDataStr) {
-                const legacyForumData = JSON.parse(forumDataStr);
-                backupData.forum_data = legacyForumData;
-                console.log(`✅ 已导出论坛数据（来自 localStorage）: ${legacyForumData.posts?.length || 0} 条帖子`);
-            } else {
-                console.log("ℹ️ 未检测到论坛数据");
-            }
-        }
-    } catch (error) {
-        console.warn("⚠️ 导出论坛数据失败:", error);
-        // 尝试从 localStorage 读取（降级）
-        try {
-            const forumDataStr = localStorage.getItem('forum_data');
-            if (forumDataStr) {
-                const legacyForumData = JSON.parse(forumDataStr);
-                backupData.forum_data = legacyForumData;
-                console.log(`⚠️ 使用 localStorage 备用论坛数据: ${legacyForumData.posts?.length || 0} 条帖子`);
-            }
-        } catch (fallbackError) {
-            console.error("❌ 降级导出也失败:", fallbackError);
-        }
-    }
-
-    // 7. 将资料打包成 JSON 档案并提供下载
-    if (backupData[KEYS.MCP_CONFIGS]) {
-        backupData[KEYS.MCP_CONFIGS] = sanitizeMcpConfigsForBackup(backupData[KEYS.MCP_CONFIGS]);
-    }
+    const backupData = {};
+    for await (const [key, value] of createFullBackupEntries()) backupData[key] = value;
 
     const timestamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
     const blob = createCompactBackupBlob(backupData);
@@ -21140,6 +21057,58 @@ const parseTopLevelJsonStream = async (readable, onEntry) => {
 
 window.parseTopLevelJsonStream = parseTopLevelJsonStream;
 
+const restoreFullBackupStorage = async (backupData, metadata = null) => {
+    let importedCount = 0;
+    const importErrors = [];
+    const kvStoreKeys = Array.isArray(metadata?.kvStoreKeys)
+        ? metadata.kvStoreKeys
+        : Object.values(KEYS);
+
+    for (const key of kvStoreKeys) {
+        if (typeof key !== 'string' || DEVICE_LOCAL_BACKUP_KEYS.has(key)) continue;
+        if (!Object.prototype.hasOwnProperty.call(backupData, key)) continue;
+        try {
+            await dbStorage.set(key, backupData[key]);
+            importedCount++;
+        } catch (error) {
+            importErrors.push(`导入 ${key} 失败: ${error.message}`);
+        }
+    }
+
+    const localStorageData = backupData.__localStorage;
+    if (localStorageData && typeof localStorageData === 'object') {
+        for (const key of LOCAL_STORAGE_BACKUP_KEYS) {
+            if (!Object.prototype.hasOwnProperty.call(localStorageData, key)) continue;
+            try {
+                localStorage.setItem(key, String(localStorageData[key]));
+                importedCount++;
+            } catch (error) {
+                importErrors.push(`恢复本机设置 ${key} 失败: ${error.message}`);
+            }
+        }
+    }
+
+    const playerMedia = backupData.__playerMedia;
+    if (playerMedia?.dataUrl) {
+        try {
+            const response = await fetch(playerMedia.dataUrl);
+            const blob = await response.blob();
+            const file = new File([blob], playerMedia.name || '自定义素材', {
+                type: playerMedia.type || blob.type || 'application/octet-stream',
+                lastModified: playerMedia.savedAt || Date.now()
+            });
+            await saveLocalPlayerMedia(file, file.type);
+            importedCount++;
+        } catch (error) {
+            importErrors.push(`恢复播放器本地素材失败: ${error.message}`);
+        }
+    }
+
+    return { importedCount, importErrors };
+};
+
+window.restoreFullBackupStorage = restoreFullBackupStorage;
+
 const handleImportSimple = async (event) => {
     const file = event.target.files[0];
     if (!file) return;
@@ -21157,6 +21126,7 @@ const handleImportSimple = async (event) => {
                 originalBackupData[key] = value;
                 await new Promise(resolve => setTimeout(resolve, 0));
             });
+            const backupMetadata = originalBackupData.__metadata || null;
             
             // 使用 confirm 再次确认，防止误操作覆盖现有资料
             if (!confirm("确定要汇入备份档案吗？这将会覆盖所有现有资料！")) {
@@ -21167,33 +21137,10 @@ const handleImportSimple = async (event) => {
             const backupData = detectAndMigrateBackupData(originalBackupData);
             
             console.log("开始将资料写入 Key-Value 储存...");
-            let importedCount = 0;
-            let errorCount = 0;
-            const importErrors = [];
-            
-            for (const key in backupData) {
-                try {
-                    // 确保只写入我们定义过的 KEY，防止汇入恶意资料
-                    if (Object.values(KEYS).includes(key)) {
-                        await dbStorage.set(key, backupData[key]);
-                        console.log(`- 已汇入资料: ${key}`);
-                        importedCount++;
-                    } else {
-                        console.warn(`跳过未知键值: ${key}`);
-                    }
-                } catch (error) {
-                    errorCount++;
-                    const errorMsg = `导入 ${key} 失败: ${error.message}`;
-                    console.error(errorMsg);
-                    importErrors.push(errorMsg);
-                    
-                    // 对于关键数据，尝试使用默认值
-                    if (key === KEYS.CHATS && !backupData[key]) {
-                        await dbStorage.set(key, {});
-                        console.log(`- 使用默认值恢复: ${key}`);
-                    }
-                }
-            }
+            const storageRestore = await restoreFullBackupStorage(backupData, backupMetadata);
+            let importedCount = storageRestore.importedCount;
+            let errorCount = storageRestore.importErrors.length;
+            const importErrors = [...storageRestore.importErrors];
             
             // 立即更新 appState 中的美化设置，确保数据一致性
             console.log("正在更新应用状态中的美化设置...");
