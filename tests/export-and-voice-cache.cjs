@@ -134,8 +134,7 @@ const APP_URL = process.env.APP_URL || 'http://127.0.0.1:4183';
                     decompressedBytes,
                     progressUpdateCount: progressUpdates.length,
                     hasDirectDownloadLink: Boolean(saveLink),
-                    hasShareButton: Array.from(saveOverlay.querySelectorAll('button'))
-                        .some(button => button.textContent.includes('系统分享')),
+                    hasShareButton: Boolean(shareButton),
                     shareButtonTextAfterClick: shareButton.textContent,
                     clickedAnchors,
                     revokedImmediately: revokedUrls.length > 0,
@@ -168,7 +167,8 @@ const APP_URL = process.env.APP_URL || 'http://127.0.0.1:4183';
         assert.ok(result.progressUpdateCount > 50, 'large structured backup must yield progress updates');
         assert.equal(result.hasDirectDownloadLink, false, 'iOS must not offer a blob download that opens as a broken page');
         assert.equal(result.hasShareButton, true, 'prepared backup must require a fresh user tap for iOS sharing');
-        assert.match(result.shareButtonTextAfterClick, /正在/, 'large file sharing must acknowledge the tap immediately');
+        assert.match(result.shareButtonTextAfterClick, /正在交给系统/, 'large file sharing must acknowledge the tap with platform-neutral text');
+        assert.equal(result.shareButtonTextAfterClick.includes('iPhone'), false, 'shared UI text must also make sense on Android and desktop');
         assert.equal(result.revokedImmediately, false, 'blob URL must survive long enough for iOS to consume it');
         assert.deepEqual(result.deleted, [
             'https://cache/0',

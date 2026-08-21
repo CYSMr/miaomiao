@@ -20468,9 +20468,7 @@ const presentBackupSaveBlob = (blob, filename) => {
         shareButton.onclick = async () => {
             const originalText = shareButton.textContent;
             shareButton.disabled = true;
-            shareButton.textContent = blob.size > 50 * 1024 * 1024
-                ? '正在交给 iPhone，请稍候…'
-                : '正在打开系统分享…';
+            shareButton.textContent = '正在交给系统，请稍候…';
             try {
                 await navigator.share({ files: [file], title: '喵喵机存档' });
                 close();
