@@ -684,6 +684,61 @@ const setImageElementSource = (element, value) => {
     }).catch(error => console.warn('图片资源读取失败:', error));
 };
 
+const hydrateImageAssetReferences = async (root = document) => {
+    const imageElements = [];
+    if (root?.matches?.('img[src^="asset://"], img[data-src^="asset://"]')) imageElements.push(root);
+    root?.querySelectorAll?.('img[src^="asset://"], img[data-src^="asset://"]').forEach(element => imageElements.push(element));
+
+    await Promise.all(imageElements.map(async element => {
+        const attribute = isImageAssetUrl(element.getAttribute('src')) ? 'src' : 'data-src';
+        const source = element.getAttribute(attribute);
+        const resolved = await resolveImageSource(source);
+        if (resolved && element.getAttribute(attribute) === source) element.setAttribute(attribute, resolved);
+    }));
+
+    const styledElements = [];
+    if (root?.getAttribute?.('style')?.includes(IMAGE_ASSET_PREFIX)) styledElements.push(root);
+    root?.querySelectorAll?.('[style*="asset://"]').forEach(element => styledElements.push(element));
+    await Promise.all(styledElements.map(async element => {
+        const styleText = element.getAttribute('style') || '';
+        const references = [...new Set(styleText.match(/asset:\/\/[a-f0-9]+/gi) || [])];
+        let hydratedStyle = styleText;
+        for (const reference of references) {
+            const resolved = await resolveImageSource(reference);
+            if (resolved) hydratedStyle = hydratedStyle.split(reference).join(resolved);
+        }
+        if (hydratedStyle !== styleText) element.setAttribute('style', hydratedStyle);
+    }));
+};
+
+const imageAssetObserver = new MutationObserver(mutations => {
+    for (const mutation of mutations) {
+        if (mutation.type === 'attributes') {
+            hydrateImageAssetReferences(mutation.target).catch(error => console.warn('图片资源渲染失败:', error));
+            continue;
+        }
+        mutation.addedNodes.forEach(node => {
+            if (node.nodeType === Node.ELEMENT_NODE) {
+                hydrateImageAssetReferences(node).catch(error => console.warn('图片资源渲染失败:', error));
+            }
+        });
+    }
+});
+
+const startImageAssetObserver = () => {
+    if (!document.documentElement) return;
+    imageAssetObserver.observe(document.documentElement, {
+        childList: true,
+        subtree: true,
+        attributes: true,
+        attributeFilter: ['src', 'data-src', 'style']
+    });
+    hydrateImageAssetReferences(document).catch(error => console.warn('图片资源初始渲染失败:', error));
+};
+
+if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', startImageAssetObserver, { once: true });
+else startImageAssetObserver();
+
 const resolveApiImageAssets = async messages => Promise.all((messages || []).map(async message => {
     if (!Array.isArray(message?.content)) return message;
     const content = await Promise.all(message.content.map(async item => {
@@ -704,6 +759,7 @@ const resolveApiImageAssets = async messages => Promise.all((messages || []).map
 window.storeImageAsset = storeImageAsset;
 window.resolveImageSource = resolveImageSource;
 window.resolveApiImageAssets = resolveApiImageAssets;
+window.hydrateImageAssetReferences = hydrateImageAssetReferences;
 
 const createMcpId = () => `mcp_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 const createPersonaId = (kind = 'persona') => `persona_${kind}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
@@ -14339,51 +14395,76 @@ const migrateAllStoredImages = async (onProgress = () => {}) => {
         failed: 0
     };
 
-    const migrateRecord = async record => {
-        if (!record || typeof record !== 'object') return;
-        if (typeof record.url === 'string' && record.url.startsWith('data:image/')) {
-            const originalUrl = record.url;
+    const migrateValue = async (value, seen = new WeakSet()) => {
+        if (typeof value === 'string' && value.startsWith('data:image/')) {
             try {
-                const result = await persistImageAsset(originalUrl, {
+                const result = await persistImageAsset(value, {
                     maxWidth: 512,
                     maxHeight: 512,
                     quality: 0.8
                 });
-                record.url = result.url;
                 stats.processed++;
                 stats.originalSize += result.originalSize;
                 stats.storedSize += result.storedSize;
                 if (result.deduplicated) stats.deduplicated++;
+                onProgress({ ...stats });
+                return result.url;
             } catch (error) {
-                record.url = originalUrl;
                 stats.failed++;
                 console.warn('跳过无法迁移的图片:', error);
+                onProgress({ ...stats });
+                return value;
             }
-            onProgress({ ...stats });
         }
-        for (const value of Object.values(record)) {
-            if (value && typeof value === 'object') await migrateRecord(value);
+
+        if (!value || typeof value !== 'object' || value instanceof Blob || value instanceof Date) return value;
+        if (seen.has(value)) return value;
+        seen.add(value);
+        if (Array.isArray(value)) {
+            for (let index = 0; index < value.length; index++) {
+                value[index] = await migrateValue(value[index], seen);
+            }
+            return value;
         }
+        for (const key of Object.keys(value)) {
+            value[key] = await migrateValue(value[key], seen);
+        }
+        return value;
     };
 
-    const chats = appState.chats || await dbStorage.get(KEYS.CHATS, {});
-    const stickers = appState.stickers || await dbStorage.get(KEYS.STICKERS, []);
-    const aiStickers = appState.aiStickers || await dbStorage.get(KEYS.AI_STICKERS, []);
-    await migrateRecord(chats);
-    await migrateRecord(stickers);
-    await migrateRecord(aiStickers);
+    await waitForDatabase();
+    const rows = await db.kvStore.toArray();
+    for (const row of rows) {
+        const processedBefore = stats.processed;
+        row.value = await migrateValue(row.value);
+        if (stats.processed > processedBefore) await db.kvStore.put(row);
+    }
 
-    appState.chats = chats;
-    appState.stickers = stickers;
-    appState.aiStickers = aiStickers;
-    await dbStorage.set(KEYS.CHATS, chats);
-    await dbStorage.set(KEYS.STICKERS, stickers);
-    await dbStorage.set(KEYS.AI_STICKERS, aiStickers);
+    if (typeof forumState !== 'undefined') {
+        const forumProcessedBefore = stats.processed;
+        await migrateValue(forumState);
+        if (stats.processed > forumProcessedBefore && typeof saveForumData === 'function') await saveForumData();
+    }
+
+    appState.chats = await dbStorage.get(KEYS.CHATS, {});
+    appState.stickers = await dbStorage.get(KEYS.STICKERS, []);
+    appState.aiStickers = await dbStorage.get(KEYS.AI_STICKERS, []);
+    appState.personas.ai = await dbStorage.get(KEYS.PERSONA_AI, []);
+    appState.personas.my = await dbStorage.get(KEYS.PERSONA_MY, []);
+    appState.momentsData = await dbStorage.get(KEYS.MOMENTS_DATA, appState.momentsData);
+    appState.homeWallpaper = await dbStorage.get(KEYS.HOME_WALLPAPER, appState.homeWallpaper);
+    appState.widgetImages = await dbStorage.get(KEYS.DECORATIVE_WIDGET_IMAGES, appState.widgetImages);
+    appState.customIcons = await dbStorage.get(KEYS.CUSTOM_ICONS, appState.customIcons);
+    appState.defaultBackgroundTexture = await dbStorage.get(KEYS.DEFAULT_BACKGROUND_TEXTURE, appState.defaultBackgroundTexture);
+    appState.topBarTexture = await dbStorage.get(KEYS.TOP_BAR_TEXTURE, appState.topBarTexture);
+    appState.bottomBarTexture = await dbStorage.get(KEYS.BOTTOM_BAR_TEXTURE, appState.bottomBarTexture);
+    setDiaryEntries(await dbStorage.get(KEYS.DIARY_ENTRIES, []));
+    await hydrateImageAssetReferences(document);
     return stats;
 };
 
 const runImageStorageMigration = async () => {
-    if (!confirm('将聊天图片和双方表情包压缩、去重并改为节省空间的存储方式。原图只有成功写入后才会被替换，继续吗？')) return;
+    if (!confirm('将聊天、日记、论坛、头像、壁纸和表情包中的图片统一压缩去重。只有成功写入后才会替换原数据，继续吗？')) return;
     const button = document.getElementById('image-storage-migrate-btn');
     const originalText = button?.textContent || '压缩并整理图片';
     if (button) button.disabled = true;
@@ -14393,7 +14474,7 @@ const runImageStorageMigration = async () => {
         });
         const beforeMB = (stats.originalSize / 1024 / 1024).toFixed(2);
         const afterMB = (stats.storedSize / 1024 / 1024).toFixed(2);
-        alert(`图片整理完成\n处理：${stats.processed} 张\n重复复用：${stats.deduplicated} 张\n失败：${stats.failed} 张\n本次原始体积：${beforeMB} MB\n新增存储：${afterMB} MB`);
+        alert(`图片整理完成\n处理：${stats.processed} 处\n重复复用：${stats.deduplicated} 处\n失败：${stats.failed} 处\n原 Base64 体积：${beforeMB} MB\n去重后新增资产：${afterMB} MB`);
         renderStickers();
         renderAiStickers();
         if (typeof renderManageMyStickers === 'function') renderManageMyStickers();
@@ -30423,7 +30504,7 @@ function renderAvatar(authorAvatar, defaultAvatar = '👤') {
     const avatarStr = String(authorAvatar).trim();
     
     // 如果是 URL 图片（包括 http/https）
-    if (avatarStr.startsWith('http://') || avatarStr.startsWith('https://')) {
+    if (avatarStr.startsWith('http://') || avatarStr.startsWith('https://') || isImageAssetUrl(avatarStr)) {
         return `<img src="${avatarStr}" style="width: 100%; height: 100%; object-fit: cover; border-radius: inherit;" onerror="this.style.display='none'; this.parentElement.innerHTML='${defaultAvatar}';" alt="头像">`;
     }
     
