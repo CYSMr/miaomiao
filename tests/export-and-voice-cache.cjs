@@ -52,6 +52,16 @@ const APP_URL = process.env.APP_URL || 'http://127.0.0.1:4183';
                 const exportProgress = window.showBackupExportProgress();
                 const initialProgressText = document.getElementById('backup-export-progress').textContent;
                 exportProgress.close();
+                const originalChats = {
+                    chat_1: {
+                        history: [
+                            { role: 'user', content: { type: 'just_image', url: 'data:image/webp;base64,LOCAL' } },
+                            { role: 'assistant', content: { type: 'just_image', url: 'https://example.com/image.webp' } },
+                            { role: 'user', content: { type: 'sticker', url: 'data:image/webp;base64,STICKER', name: '喵' } }
+                        ]
+                    }
+                };
+                const optimizedChats = window.sanitizeChatsForOptimizedBackup(originalChats);
 
                 const repeatedStickerPayload = `data:image/webp;base64,${'A'.repeat(30 * 1024)}`;
                 const realisticChatHistory = Array.from({ length: 10240 }, (_, index) => ({
@@ -75,6 +85,14 @@ const APP_URL = process.env.APP_URL || 'http://127.0.0.1:4183';
                 window.presentBackupSaveBlob(largeGzipBlob, 'AIRP-Backup-large.json.gz');
                 const saveOverlay = document.getElementById('backup-save-overlay');
                 const saveLink = saveOverlay.querySelector('a[download]');
+                const shareButton = Array.from(saveOverlay.querySelectorAll('button'))
+                    .find(button => button.textContent.includes('系统分享'));
+                Object.defineProperty(navigator, 'share', {
+                    configurable: true,
+                    value: () => new Promise(() => {})
+                });
+                shareButton.click();
+                await new Promise(resolve => setTimeout(resolve, 0));
 
                 const fakeCache = {
                     deleted: [],
@@ -106,6 +124,11 @@ const APP_URL = process.env.APP_URL || 'http://127.0.0.1:4183';
                     blobText,
                     deliveryMethod,
                     initialProgressText,
+                    optimizedLocalImageType: optimizedChats.chat_1.history[0].content.type,
+                    optimizedLocalImageText: optimizedChats.chat_1.history[0].content.text,
+                    optimizedRemoteImageUrl: optimizedChats.chat_1.history[1].content.url,
+                    optimizedStickerUrl: optimizedChats.chat_1.history[2].content.url,
+                    originalLocalImageUrl: originalChats.chat_1.history[0].content.url,
                     sharedFiles,
                     largeGzipSize: largeGzipBlob.size,
                     decompressedBytes,
@@ -113,6 +136,7 @@ const APP_URL = process.env.APP_URL || 'http://127.0.0.1:4183';
                     hasDirectDownloadLink: Boolean(saveLink),
                     hasShareButton: Array.from(saveOverlay.querySelectorAll('button'))
                         .some(button => button.textContent.includes('系统分享')),
+                    shareButtonTextAfterClick: shareButton.textContent,
                     clickedAnchors,
                     revokedImmediately: revokedUrls.length > 0,
                     deleted: fakeCache.deleted,
@@ -128,6 +152,11 @@ const APP_URL = process.env.APP_URL || 'http://127.0.0.1:4183';
         assert.equal(result.blobText, '{"greeting":"喵","nested":{"ok":true}}');
         assert.equal(result.deliveryMethod, 'shared');
         assert.equal(result.initialProgressText.includes('300MB'), false, 'export hint must not assume every backup is 300 MB');
+        assert.equal(result.optimizedLocalImageType, 'image');
+        assert.match(result.optimizedLocalImageText, /原图未保存/);
+        assert.equal(result.optimizedRemoteImageUrl, 'https://example.com/image.webp');
+        assert.equal(result.optimizedStickerUrl, 'data:image/webp;base64,STICKER');
+        assert.equal(result.originalLocalImageUrl, 'data:image/webp;base64,LOCAL', 'backup optimization must not mutate live chat data');
         assert.deepEqual(result.sharedFiles, [{
             name: 'backup.json',
             type: 'application/json',
@@ -139,6 +168,7 @@ const APP_URL = process.env.APP_URL || 'http://127.0.0.1:4183';
         assert.ok(result.progressUpdateCount > 50, 'large structured backup must yield progress updates');
         assert.equal(result.hasDirectDownloadLink, false, 'iOS must not offer a blob download that opens as a broken page');
         assert.equal(result.hasShareButton, true, 'prepared backup must require a fresh user tap for iOS sharing');
+        assert.match(result.shareButtonTextAfterClick, /正在/, 'large file sharing must acknowledge the tap immediately');
         assert.equal(result.revokedImmediately, false, 'blob URL must survive long enough for iOS to consume it');
         assert.deepEqual(result.deleted, [
             'https://cache/0',

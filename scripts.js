@@ -20290,6 +20290,25 @@ const createCompactBackupBlob = (backupData) => {
     return new Blob(parts, { type: 'application/json' });
 };
 
+const sanitizeChatsForOptimizedBackup = (chats) => Object.fromEntries(
+    Object.entries(chats || {}).map(([chatId, chat]) => [chatId, {
+        ...chat,
+        history: Array.isArray(chat?.history) ? chat.history.map(message => {
+            const content = message?.content;
+            if (content?.type !== 'just_image' || typeof content.url !== 'string' || !content.url.startsWith('data:image/')) {
+                return message;
+            }
+            return {
+                ...message,
+                content: {
+                    type: 'image',
+                    text: content.caption || '图片（原图未保存）'
+                }
+            };
+        }) : chat?.history
+    }])
+);
+
 const createStreamingJsonGzipBlob = async (entries, onProgress = null) => {
     if (typeof CompressionStream !== 'function') throw new Error('当前浏览器不支持流式压缩');
 
@@ -20447,11 +20466,18 @@ const presentBackupSaveBlob = (blob, filename) => {
         shareButton.textContent = '系统分享 / 存储到文件';
         shareButton.style.cssText = 'width:100%;padding:12px;border:0;border-radius:10px;background:#111;color:#fff;font-size:15px;margin-bottom:10px;';
         shareButton.onclick = async () => {
+            const originalText = shareButton.textContent;
+            shareButton.disabled = true;
+            shareButton.textContent = blob.size > 50 * 1024 * 1024
+                ? '正在交给 iPhone，请稍候…'
+                : '正在打开系统分享…';
             try {
                 await navigator.share({ files: [file], title: '喵喵机存档' });
                 close();
             } catch (error) {
                 if (error?.name !== 'AbortError') alert(`系统分享失败：${error.message || error}`);
+                shareButton.disabled = false;
+                shareButton.textContent = originalText;
             }
         };
         panel.appendChild(shareButton);
@@ -20512,6 +20538,7 @@ const showBackupExportProgress = () => {
 };
 
 window.createCompactBackupBlob = createCompactBackupBlob;
+window.sanitizeChatsForOptimizedBackup = sanitizeChatsForOptimizedBackup;
 window.downloadBackupBlob = downloadBackupBlob;
 window.presentBackupSaveBlob = presentBackupSaveBlob;
 window.showBackupExportProgress = showBackupExportProgress;
@@ -20549,6 +20576,9 @@ const exportDataSimple = async () => {
             for (const key of keysToExport) {
                 let data = await dbStorage.get(key);
                 if (key === KEYS.MCP_CONFIGS && data) data = sanitizeMcpConfigsForBackup(data);
+                if (key === KEYS.CHATS && data && appState.imageStorageOptimization) {
+                    data = sanitizeChatsForOptimizedBackup(data);
+                }
                 if (data !== undefined) yield [key, data];
                 data = null;
             }
