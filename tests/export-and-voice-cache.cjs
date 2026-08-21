@@ -49,6 +49,9 @@ const APP_URL = process.env.APP_URL || 'http://127.0.0.1:4183';
                 const blob = window.createCompactBackupBlob({ greeting: '喵', nested: { ok: true } });
                 const blobText = await blob.text();
                 const deliveryMethod = await window.downloadBackupBlob(blob, 'backup.json');
+                const exportProgress = window.showBackupExportProgress();
+                const initialProgressText = document.getElementById('backup-export-progress').textContent;
+                exportProgress.close();
 
                 const repeatedStickerPayload = `data:image/webp;base64,${'A'.repeat(30 * 1024)}`;
                 const realisticChatHistory = Array.from({ length: 10240 }, (_, index) => ({
@@ -102,6 +105,7 @@ const APP_URL = process.env.APP_URL || 'http://127.0.0.1:4183';
                 return {
                     blobText,
                     deliveryMethod,
+                    initialProgressText,
                     sharedFiles,
                     largeGzipSize: largeGzipBlob.size,
                     decompressedBytes,
@@ -123,6 +127,7 @@ const APP_URL = process.env.APP_URL || 'http://127.0.0.1:4183';
 
         assert.equal(result.blobText, '{"greeting":"喵","nested":{"ok":true}}');
         assert.equal(result.deliveryMethod, 'shared');
+        assert.equal(result.initialProgressText.includes('300MB'), false, 'export hint must not assume every backup is 300 MB');
         assert.deepEqual(result.sharedFiles, [{
             name: 'backup.json',
             type: 'application/json',

@@ -20493,7 +20493,7 @@ const showBackupExportProgress = () => {
     title.textContent = '正在准备存档…';
     title.style.cssText = 'font-size:18px;font-weight:600;margin-bottom:10px;';
     const status = document.createElement('div');
-    status.textContent = '300MB 存档可能需要等待一会，请不要关闭页面';
+    status.textContent = '正在读取并压缩存档，请不要关闭页面';
     status.style.cssText = 'font-size:14px;color:#777;line-height:1.6;';
     panel.append(title, status);
     overlay.appendChild(panel);
