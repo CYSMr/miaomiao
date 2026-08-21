@@ -67,6 +67,13 @@ const APP_URL = process.env.APP_URL || 'http://127.0.0.1:4183';
                 await window.parseTopLevelJsonStream(streamedJsonSource, (key, value) => {
                     streamedEntries.push([key, value]);
                 });
+                window.StreamParserJson = undefined;
+                document.querySelectorAll('script[src*="stream-json-parser.min.js"]').forEach(script => script.remove());
+                const fallbackEntries = [];
+                const fallbackJson = new TextEncoder().encode('{"loaded":"dynamically"}');
+                await window.parseTopLevelJsonStream(new Blob([fallbackJson]).stream(), (key, value) => {
+                    fallbackEntries.push([key, value]);
+                });
                 const originalChats = {
                     chat_1: {
                         history: [
@@ -149,6 +156,7 @@ const APP_URL = process.env.APP_URL || 'http://127.0.0.1:4183';
                     initialProgressText,
                     importFileAccept,
                     streamedEntries,
+                    fallbackEntries,
                     optimizedLocalImageType: optimizedChats.chat_1.history[0].content.type,
                     optimizedLocalImageText: optimizedChats.chat_1.history[0].content.text,
                     optimizedRemoteImageUrl: optimizedChats.chat_1.history[1].content.url,
@@ -184,6 +192,9 @@ const APP_URL = process.env.APP_URL || 'http://127.0.0.1:4183';
             ['second', [1, 2, 3]],
             ['third', true]
         ], 'large imports must be parsed one top-level entry at a time');
+        assert.deepEqual(result.fallbackEntries, [
+            ['loaded', 'dynamically']
+        ], 'imports must load the streaming parser when cached HTML did not preload it');
         assert.equal(result.optimizedLocalImageType, 'image');
         assert.match(result.optimizedLocalImageText, /原图未保存/);
         assert.equal(result.optimizedRemoteImageUrl, 'https://example.com/image.webp');

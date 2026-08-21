@@ -21090,11 +21090,37 @@ const parseTopLevelJsonStreamLegacy = async (readable, onEntry) => {
     if (!finished) throw new Error('备份 JSON 不完整');
 };
 
-const parseTopLevelJsonStream = async (readable, onEntry) => {
-    const JSONParser = window.StreamParserJson?.JSONParser;
-    if (typeof JSONParser !== 'function') {
-        throw new Error('增量 JSON 解析器未加载');
+let streamJsonParserLoadPromise = null;
+const loadStreamJsonParser = async () => {
+    if (typeof window.StreamParserJson?.JSONParser === 'function') {
+        return window.StreamParserJson.JSONParser;
     }
+
+    if (!streamJsonParserLoadPromise) {
+        streamJsonParserLoadPromise = new Promise((resolve, reject) => {
+            const script = document.createElement('script');
+            const parserUrl = new URL('assets/stream-json-parser.min.js', document.baseURI);
+            parserUrl.searchParams.set('fallback', '1');
+            script.src = parserUrl.href;
+            script.async = true;
+            script.onload = () => {
+                const JSONParser = window.StreamParserJson?.JSONParser;
+                if (typeof JSONParser === 'function') resolve(JSONParser);
+                else reject(new Error('增量 JSON 解析器加载后不可用'));
+            };
+            script.onerror = () => reject(new Error('增量 JSON 解析器加载失败'));
+            document.head.appendChild(script);
+        }).catch(error => {
+            streamJsonParserLoadPromise = null;
+            throw error;
+        });
+    }
+
+    return streamJsonParserLoadPromise;
+};
+
+const parseTopLevelJsonStream = async (readable, onEntry) => {
+    const JSONParser = await loadStreamJsonParser();
 
     const parser = new JSONParser({
         paths: ['$.*'],
