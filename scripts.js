@@ -14568,7 +14568,7 @@ const migrateAllStoredImages = async (onProgress = () => {}) => {
 };
 
 const runImageStorageMigration = async () => {
-    if (!confirm('将聊天图片、日记图片、论坛图片、头像和表情包统一压缩去重。聊天列表壁纸不会处理。只有成功写入后才会替换原数据，继续吗？')) return;
+    if (!confirm('将聊天图片、日记图片、论坛图片、头像和表情包统一压缩去重。只有成功写入后才会替换原数据，继续吗？')) return;
     const button = document.getElementById('image-storage-migrate-btn');
     const originalText = button?.textContent || '压缩并整理图片';
     if (button) button.disabled = true;
