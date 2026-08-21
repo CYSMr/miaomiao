@@ -13,6 +13,7 @@ const APP_URL = process.env.APP_URL || 'http://127.0.0.1:4183';
         const page = await browser.newPage({ viewport: { width: 402, height: 874 } });
         await page.goto(APP_URL, { waitUntil: 'domcontentloaded' });
         await page.waitForFunction(() => typeof db !== 'undefined' && db?.isOpen?.());
+        await page.waitForFunction(() => typeof appState !== 'undefined' && Array.isArray(appState.aiStickers) && appState.aiStickers.length > 0);
 
         const result = await page.evaluate(async () => {
             await db.imageAssets.clear();
@@ -59,6 +60,7 @@ const APP_URL = process.env.APP_URL || 'http://127.0.0.1:4183';
                 rowCount: await db.imageAssets.count(),
                 apiUrl: apiMessages[0].content[0].image_url.url,
                 migrateButtonText: document.getElementById('image-storage-migrate-btn')?.textContent.trim(),
+                migrateButtonInActionGrid: document.getElementById('image-storage-migrate-btn')?.parentElement?.style.gridTemplateColumns,
                 oldToggleExists: Boolean(document.getElementById('image-storage-optimization-toggle'))
             };
         });
@@ -75,6 +77,7 @@ const APP_URL = process.env.APP_URL || 'http://127.0.0.1:4183';
         assert.equal(result.migration.failed, 0);
         assert.match(result.apiUrl, /^data:image\/webp;base64,/);
         assert.equal(result.migrateButtonText, '压缩并整理图片');
+        assert.equal(result.migrateButtonInActionGrid, '1fr 1fr');
         assert.equal(result.oldToggleExists, false);
 
         console.log('PASS: image assets are compressed, deduplicated, migrated, and resolved for API calls');
