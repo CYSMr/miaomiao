@@ -121,6 +121,7 @@ const APP_URL = process.env.APP_URL || 'http://127.0.0.1:4183';
                 analysisHasUnlistedKey: analysis.entries.some(entry => entry.key === 'unlisted_storage_probe' && entry.base64AudioCount === 1),
                 analysisIndependentForumRefs: analysis.entries.find(entry => entry.key === 'ForumDatabase/forumState')?.assetRefCount || 0,
                 analysisButtonDisplay: getComputedStyle(analysisButton).display,
+                analysisButtonBackground: getComputedStyle(analysisButton).backgroundColor,
                 analysisButtonText: analysisButton.textContent.trim(),
                 migrateButtonText: document.getElementById('image-storage-migrate-btn')?.textContent.trim(),
                 migrateButtonInActionGrid: document.getElementById('image-storage-migrate-btn')?.parentElement?.style.gridTemplateColumns,
@@ -156,6 +157,7 @@ const APP_URL = process.env.APP_URL || 'http://127.0.0.1:4183';
         assert.equal(result.analysisHasUnlistedKey, true);
         assert.ok(result.analysisIndependentForumRefs >= 1);
         assert.notEqual(result.analysisButtonDisplay, 'none');
+        assert.notEqual(result.analysisButtonBackground, 'rgba(0, 0, 0, 0)');
         assert.equal(result.analysisButtonText, '查看详细存储占用');
         assert.equal(result.migrateButtonText, '压缩并整理图片');
         assert.equal(result.migrateButtonInActionGrid, '1fr 1fr');
