@@ -20945,22 +20945,170 @@ const detectAndMigrateBackupData = (backupData) => {
  * 【增强版】汇入资料函数 - 支持旧版本兼容
  * 读取使用者选择的 JSON 档案，自动检测版本并迁移数据格式，然后写入 key-value 储存。
  */
+const parseTopLevelJsonStream = async (readable, onEntry) => {
+    const reader = readable.getReader();
+    const decoder = new TextDecoder();
+    let phase = 'root';
+    let currentKey = '';
+    let keyText = '';
+    let keyEscaped = false;
+    let valueParts = [];
+    let valueStarted = false;
+    let valueDepth = 0;
+    let valueInString = false;
+    let valueEscaped = false;
+    let finished = false;
+
+    const consume = async (text) => {
+        let valueSegmentStart = valueStarted ? 0 : -1;
+
+        for (let index = 0; index < text.length; index++) {
+            const char = text[index];
+
+            if (phase === 'root') {
+                if (/\s/.test(char)) continue;
+                if (char !== '{') throw new Error('备份根数据必须是 JSON 对象');
+                phase = 'key';
+                continue;
+            }
+
+            if (phase === 'key') {
+                if (/\s/.test(char) || char === ',') continue;
+                if (char === '}') {
+                    finished = true;
+                    phase = 'done';
+                    continue;
+                }
+                if (char !== '"') throw new Error('备份数据键名格式错误');
+                keyText = '"';
+                keyEscaped = false;
+                phase = 'key-string';
+                continue;
+            }
+
+            if (phase === 'key-string') {
+                keyText += char;
+                if (keyEscaped) {
+                    keyEscaped = false;
+                } else if (char === '\\') {
+                    keyEscaped = true;
+                } else if (char === '"') {
+                    currentKey = JSON.parse(keyText);
+                    keyText = '';
+                    phase = 'colon';
+                }
+                continue;
+            }
+
+            if (phase === 'colon') {
+                if (/\s/.test(char)) continue;
+                if (char !== ':') throw new Error('备份数据缺少冒号');
+                phase = 'value';
+                valueParts = [];
+                valueStarted = false;
+                valueDepth = 0;
+                valueInString = false;
+                valueEscaped = false;
+                valueSegmentStart = -1;
+                continue;
+            }
+
+            if (phase === 'value') {
+                if (!valueStarted) {
+                    if (/\s/.test(char)) continue;
+                    valueStarted = true;
+                    valueSegmentStart = index;
+                }
+
+                if (valueInString) {
+                    if (valueEscaped) {
+                        valueEscaped = false;
+                    } else if (char === '\\') {
+                        valueEscaped = true;
+                    } else if (char === '"') {
+                        valueInString = false;
+                    }
+                    continue;
+                }
+
+                if (char === '"') {
+                    valueInString = true;
+                    continue;
+                }
+                if (char === '{' || char === '[') {
+                    valueDepth++;
+                    continue;
+                }
+                if (char === '}' && valueDepth > 0) {
+                    valueDepth--;
+                    continue;
+                }
+                if (char === ']' && valueDepth > 0) {
+                    valueDepth--;
+                    continue;
+                }
+
+                const entryEnds = valueDepth === 0 && (char === ',' || char === '}');
+                if (!entryEnds) continue;
+
+                valueParts.push(text.slice(valueSegmentStart, index));
+                let rawValue = valueParts.join('').trim();
+                if (!rawValue) throw new Error(`备份数据 ${currentKey} 没有值`);
+                const parsedValue = JSON.parse(rawValue);
+                rawValue = '';
+                valueParts = [];
+                valueStarted = false;
+                valueSegmentStart = -1;
+                await onEntry(currentKey, parsedValue);
+                currentKey = '';
+
+                if (char === '}') {
+                    finished = true;
+                    phase = 'done';
+                } else {
+                    phase = 'key';
+                }
+                continue;
+            }
+
+            if (phase === 'done' && !/\s/.test(char)) {
+                throw new Error('备份 JSON 结尾后存在多余内容');
+            }
+        }
+
+        if (phase === 'value' && valueStarted && valueSegmentStart >= 0) {
+            valueParts.push(text.slice(valueSegmentStart));
+        }
+    };
+
+    while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        await consume(decoder.decode(value, { stream: true }));
+    }
+    await consume(decoder.decode());
+    if (!finished) throw new Error('备份 JSON 不完整');
+};
+
+window.parseTopLevelJsonStream = parseTopLevelJsonStream;
+
 const handleImportSimple = async (event) => {
     const file = event.target.files[0];
     if (!file) return;
 
     try {
-            let backupText;
+            let backupStream = file.stream();
             if (file.name.toLowerCase().endsWith('.gz') || file.type === 'application/gzip') {
                 if (typeof DecompressionStream !== 'function') {
                     throw new Error('当前浏览器不支持解压该存档');
                 }
-                const decompressed = file.stream().pipeThrough(new DecompressionStream('gzip'));
-                backupText = await new Response(decompressed).text();
-            } else {
-                backupText = await file.text();
+                backupStream = backupStream.pipeThrough(new DecompressionStream('gzip'));
             }
-            const originalBackupData = JSON.parse(backupText);
+            const originalBackupData = {};
+            await parseTopLevelJsonStream(backupStream, async (key, value) => {
+                originalBackupData[key] = value;
+                await new Promise(resolve => setTimeout(resolve, 0));
+            });
             
             // 使用 confirm 再次确认，防止误操作覆盖现有资料
             if (!confirm("确定要汇入备份档案吗？这将会覆盖所有现有资料！")) {
