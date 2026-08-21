@@ -443,6 +443,8 @@ const KEYS = {
     CUSTOM_ICONS: 'custom_app_icons', 
     CUSTOM_FONT_URL: 'custom_font_url_v2', 
     CUSTOM_FONT_FAMILY: 'custom_font_family_v1',
+    OFFLINE_FONT_URL: 'offline_font_url_v1',
+    OFFLINE_FONT_FAMILY: 'offline_font_family_v1',
     CUSTOM_CSS: 'custom_css_v2',
     CUSTOM_GLOBAL_CSS: 'custom_global_css_v1',
     GLOBAL_FONT_SIZE: 'global_font_size_v1',
@@ -662,6 +664,29 @@ const persistImageAsset = async (source, options = {}) => {
 
 const storeImageAsset = async (source, options = {}) => (await persistImageAsset(source, options)).url;
 
+const storeFontAsset = async file => {
+    if (!(file instanceof Blob)) throw new Error('请选择字体文件');
+    const fileName = String(file.name || '').toLowerCase();
+    const supportedExtension = /\.(ttf|otf|woff|woff2)$/.test(fileName);
+    const supportedMime = /^(font\/(ttf|otf|woff|woff2)|application\/(x-font-ttf|x-font-opentype|font-woff|font-sfnt|octet-stream))$/i.test(file.type || '');
+    if (!supportedExtension && !supportedMime) throw new Error('仅支持 TTF、OTF、WOFF、WOFF2 字体文件');
+
+    await waitForDatabase();
+    const id = await hashImageBlob(file);
+    const existing = await db.imageAssets.get(id);
+    if (!existing) {
+        await db.imageAssets.put({
+            id,
+            blob: file,
+            mimeType: file.type || 'font/ttf',
+            size: file.size,
+            createdAt: Date.now(),
+            kind: 'font'
+        });
+    }
+    return `${IMAGE_ASSET_PREFIX}${id}`;
+};
+
 const resolveImageSource = async (value, mode = 'object-url') => {
     if (!isImageAssetUrl(value)) return value || '';
     const id = imageAssetIdFromUrl(value);
@@ -757,6 +782,7 @@ const resolveApiImageAssets = async messages => Promise.all((messages || []).map
 }));
 
 window.storeImageAsset = storeImageAsset;
+window.storeFontAsset = storeFontAsset;
 window.resolveImageSource = resolveImageSource;
 window.resolveApiImageAssets = resolveApiImageAssets;
 window.hydrateImageAssetReferences = hydrateImageAssetReferences;
@@ -4250,7 +4276,10 @@ const appState = {
     manageStickerContext: 'my', // 管理页面的表情包上下文
     manageMultiSelectMode: false, // 管理页面的多选模式
     manageSelectedStickerIndices: new Set(), // 管理页面已选择的表情包索引
-   customFontUrl: '', 
+   customFontUrl: '',
+    customFontFamily: '',
+    offlineFontUrl: '',
+    offlineFontFamily: '',
     customCss: '',    
     playlist: [],
     musicSessionPartner: null,            
@@ -6288,7 +6317,12 @@ const handleAISendDiary = async (diaryContent) => {
     }
 };
 
-const applyCustomFont = async (fontUrl, fontFamily) => {
+const applyCustomFont = async (
+    fontUrl,
+    fontFamily,
+    offlineFontUrl = appState.offlineFontUrl,
+    offlineFontFamily = appState.offlineFontFamily
+) => {
     let styleTag = document.getElementById('custom-font-style');
     if (!styleTag) {
         styleTag = document.createElement('style');
@@ -6296,59 +6330,73 @@ const applyCustomFont = async (fontUrl, fontFamily) => {
         document.head.appendChild(styleTag);
     }
 
-    if (!fontUrl && !fontFamily) {
+    if (!fontUrl && !fontFamily && !offlineFontUrl && !offlineFontFamily) {
         styleTag.innerHTML = '';
         return;
     }
 
-    let finalCss = '';
-    let familyToApply = fontFamily; // 默认使用用户输入的名称
+    const buildModeFont = async (source, requestedFamily, internalFamily, scope, familyInputId) => {
+        if (!source && !requestedFamily) return { imports: '', rules: '' };
+        let imports = '';
+        let face = '';
+        let familyToApply = requestedFamily;
 
-    if (fontUrl) {
-        if (fontUrl.endsWith('.css')) {
-            finalCss += `@import url('${fontUrl}');\n`;
-
-            if (!familyToApply) {
-                try {
-                    console.log('尝试自动解析字体名称...');
-                    const response = await fetch(fontUrl);
-                    if (!response.ok) throw new Error('网络响应失败');
-                    const cssText = await response.text();
-                    const match = cssText.match(/font-family:\s*['"](.+?)['"]/);
-                    if (match && match[1]) {
-                        familyToApply = `'${match[1]}'`;
-                        console.log('自动解析成功，字体名称：', familyToApply);
-                        document.getElementById('custom-font-family-input').value = familyToApply;
-                    } else {
-                       console.log('自动解析失败，未在CSS文件中找到字体名称。');
+        if (source) {
+            const isCssSource = !isImageAssetUrl(source) && /\.css(?:[?#].*)?$/i.test(source);
+            if (isCssSource) {
+                imports = `@import url('${source}');\n`;
+                if (!familyToApply) {
+                    try {
+                        const response = await fetch(source);
+                        if (!response.ok) throw new Error('网络响应失败');
+                        const cssText = await response.text();
+                        const match = cssText.match(/font-family:\s*['"](.+?)['"]/);
+                        if (match?.[1]) {
+                            familyToApply = `'${match[1]}'`;
+                            const familyInput = document.getElementById(familyInputId);
+                            if (familyInput) familyInput.value = familyToApply;
+                        }
+                    } catch (error) {
+                        console.warn('自动解析字体名称失败，请手动填写 Font Family:', error);
                     }
-                } catch (error) {
-                    console.error('自动解析字体失败（可能是跨域安全限制）:', error);
                 }
-            }
-
-        } else { // .ttf 文件逻辑
-            finalCss += `
-@font-face {
-  font-family: 'UserCustomFont';
-  src: url('${fontUrl}');
+            } else {
+                const resolvedSource = isImageAssetUrl(source) ? await resolveImageSource(source) : source;
+                if (resolvedSource) {
+                    face = `@font-face {
+  font-family: '${internalFamily}';
+  src: url('${resolvedSource}');
   font-display: swap;
 }\n`;
-            if (!familyToApply) {
-                familyToApply = "'UserCustomFont'";
+                    familyToApply = `'${internalFamily}'`;
+                }
             }
         }
-    }
 
-    if (familyToApply) {
-        finalCss += `
-#phone-screen, #phone-screen input, #phone-screen textarea, #phone-screen button {
+        const rules = familyToApply ? `${face}${scope} {
   font-family: ${familyToApply}, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif !important;
-}`;
-    }
+}\n` : face;
+        return { imports, rules };
+    };
 
-    styleTag.innerHTML = finalCss;
+    const online = await buildModeFont(
+        fontUrl,
+        fontFamily,
+        'UserOnlineFont',
+        '#phone-screen:not(.offline-active), #phone-screen:not(.offline-active) input, #phone-screen:not(.offline-active) textarea, #phone-screen:not(.offline-active) button',
+        'custom-font-family-input'
+    );
+    const offline = await buildModeFont(
+        offlineFontUrl,
+        offlineFontFamily,
+        'UserOfflineFont',
+        '#phone-screen.offline-active .chat-messages.offline-mode, #phone-screen.offline-active .chat-messages.offline-mode *',
+        'offline-font-family-input'
+    );
+
+    styleTag.innerHTML = `${online.imports}${offline.imports}${online.rules}${offline.rules}`;
 };
+window.applyCustomFont = applyCustomFont;
 
 // ▼▼▼ 使用这个【修正版】替换旧的 applyGlobalFontSize 函数 ▼▼▼
 const applyGlobalFontSize = (size) => {
@@ -16163,10 +16211,56 @@ document.getElementById('modal-btn-end-music-session-from-player-new').onclick =
         btn.classList.toggle('active', btn.dataset.size === savedBubbleSize);
     });
 
+const updateFontImportStatus = (mode, source, fileName = '') => {
+    const status = document.getElementById(`${mode}-font-file-status`);
+    if (!status) return;
+    status.textContent = isImageAssetUrl(source)
+        ? (fileName ? `本地：${fileName}` : '已导入本地字体')
+        : (source ? '使用在线字体' : '未导入本地字体');
+};
+
+const bindFontFileImport = mode => {
+    const fileInput = document.getElementById(`${mode}-font-file-input`);
+    const importButton = document.getElementById(`import-${mode}-font-btn`);
+    const clearButton = document.getElementById(`clear-${mode}-font-btn`);
+    const urlInput = document.getElementById(mode === 'online' ? 'custom-font-url-input' : 'offline-font-url-input');
+    const familyInput = document.getElementById(mode === 'online' ? 'custom-font-family-input' : 'offline-font-family-input');
+    if (!fileInput || !importButton || !clearButton || !urlInput || !familyInput) return;
+
+    importButton.onclick = () => fileInput.click();
+    fileInput.onchange = async () => {
+        const file = fileInput.files?.[0];
+        if (!file) return;
+        try {
+            urlInput.value = await storeFontAsset(file);
+            familyInput.value = '';
+            updateFontImportStatus(mode, urlInput.value, file.name);
+        } catch (error) {
+            alert(error.message || '字体导入失败');
+        } finally {
+            fileInput.value = '';
+        }
+    };
+    clearButton.onclick = () => {
+        urlInput.value = '';
+        familyInput.value = '';
+        updateFontImportStatus(mode, '');
+    };
+    urlInput.addEventListener('input', () => updateFontImportStatus(mode, urlInput.value.trim()));
+};
+
+bindFontFileImport('online');
+bindFontFileImport('offline');
+
     // ▼▼▼ 用这个新版本替换旧的 settings-hub-beautify-btn.onclick ▼▼▼
 document.getElementById('settings-hub-beautify-btn').onclick = () => {
     // --- 已有代码，保持不变 ---
     document.getElementById('custom-font-url-input').value = appState.customFontUrl || '';
+    document.getElementById('custom-font-family-input').value = appState.customFontFamily || '';
+    document.getElementById('offline-font-url-input').value = appState.offlineFontUrl || '';
+    document.getElementById('offline-font-family-input').value = appState.offlineFontFamily || '';
+    updateFontImportStatus('online', appState.customFontUrl || '');
+    updateFontImportStatus('offline', appState.offlineFontUrl || '');
     document.getElementById('custom-css-input').value = appState.customCss || '';
     const slider = document.getElementById('global-font-size-slider');
     const valueSpan = document.getElementById('font-size-value');
@@ -16194,6 +16288,8 @@ document.getElementById('save-beautification-btn').onclick = async () => {
     // 1. 获取所有美化设置值
     const newFontUrl = document.getElementById('custom-font-url-input').value.trim();
     const newFontFamily = document.getElementById('custom-font-family-input').value.trim(); // 新增
+    const newOfflineFontUrl = document.getElementById('offline-font-url-input').value.trim();
+    const newOfflineFontFamily = document.getElementById('offline-font-family-input').value.trim();
     const newBubbleCss = document.getElementById('custom-css-input').value.trim();
     const newGlobalCss = document.getElementById('custom-global-css-input').value.trim();
     const newFontSize = document.getElementById('global-font-size-slider').value;
@@ -16202,6 +16298,8 @@ document.getElementById('save-beautification-btn').onclick = async () => {
     // 2. 更新 appState 中的所有美化设置
     appState.customFontUrl = newFontUrl;
     appState.customFontFamily = newFontFamily; // 新增
+    appState.offlineFontUrl = newOfflineFontUrl;
+    appState.offlineFontFamily = newOfflineFontFamily;
     appState.customCss = newBubbleCss;
     appState.customGlobalCss = newGlobalCss;
     appState.globalFontSize = parseFloat(newFontSize);
@@ -16215,6 +16313,8 @@ document.getElementById('save-beautification-btn').onclick = async () => {
         console.log('appState相关值:', {
             customFontUrl: appState.customFontUrl,
             customFontFamily: appState.customFontFamily,
+            offlineFontUrl: appState.offlineFontUrl,
+            offlineFontFamily: appState.offlineFontFamily,
             customCss: appState.customCss,
             customGlobalCss: appState.customGlobalCss,
             globalFontSize: appState.globalFontSize,
@@ -16226,6 +16326,8 @@ document.getElementById('save-beautification-btn').onclick = async () => {
         
         await dbStorage.set(KEYS.CUSTOM_FONT_URL, appState.customFontUrl || '');
         await dbStorage.set(KEYS.CUSTOM_FONT_FAMILY, appState.customFontFamily || '');
+        await dbStorage.set(KEYS.OFFLINE_FONT_URL, appState.offlineFontUrl || '');
+        await dbStorage.set(KEYS.OFFLINE_FONT_FAMILY, appState.offlineFontFamily || '');
         await dbStorage.set(KEYS.CUSTOM_CSS, appState.customCss || '');
         await dbStorage.set(KEYS.CUSTOM_GLOBAL_CSS, appState.customGlobalCss || '');
         await dbStorage.set(KEYS.GLOBAL_FONT_SIZE, appState.globalFontSize || 16);
@@ -16237,7 +16339,7 @@ document.getElementById('save-beautification-btn').onclick = async () => {
         console.log('所有设置已成功保存到数据库');
 
         // 4. 实时应用所有样式
-        applyCustomFont(appState.customFontUrl, appState.customFontFamily);
+        await applyCustomFont(appState.customFontUrl, appState.customFontFamily, appState.offlineFontUrl, appState.offlineFontFamily);
         applyCustomCss(appState.customCss); // 应用气泡CSS
         applyCustomGlobalCss(appState.customGlobalCss); // 应用全局CSS
         applyGlobalFontSize(appState.globalFontSize);
@@ -20061,6 +20163,8 @@ const exportTheme = async () => {
             settings: {
                 customFontUrl: appState.customFontUrl,
                 customFontFamily: appState.customFontFamily,
+                offlineFontUrl: appState.offlineFontUrl,
+                offlineFontFamily: appState.offlineFontFamily,
                 customCss: appState.customCss,
                 customGlobalCss: appState.customGlobalCss,
                 globalFontSize: appState.globalFontSize,
@@ -20146,6 +20250,8 @@ const handleThemeImport = (event) => {
             // 应用文本和设置
             appState.customFontUrl = themeConfig.settings.customFontUrl || '';
             appState.customFontFamily = themeConfig.settings.customFontFamily || '';
+            appState.offlineFontUrl = themeConfig.settings.offlineFontUrl || '';
+            appState.offlineFontFamily = themeConfig.settings.offlineFontFamily || '';
             appState.customCss = themeConfig.settings.customCss || '';
             appState.customGlobalCss = themeConfig.settings.customGlobalCss || '';
             appState.globalFontSize = themeConfig.settings.globalFontSize || 16;
@@ -20180,6 +20286,9 @@ const handleThemeImport = (event) => {
 
             // 刷新UI以显示导入的主题
             document.getElementById('custom-font-url-input').value = appState.customFontUrl;
+            document.getElementById('custom-font-family-input').value = appState.customFontFamily;
+            document.getElementById('offline-font-url-input').value = appState.offlineFontUrl;
+            document.getElementById('offline-font-family-input').value = appState.offlineFontFamily;
             document.getElementById('custom-css-input').value = appState.customCss;
             document.getElementById('custom-global-css-input').value = appState.customGlobalCss;
             document.getElementById('global-font-size-slider').value = appState.globalFontSize;
@@ -20189,7 +20298,7 @@ const handleThemeImport = (event) => {
             });
             
             // 实时应用所有样式
-            applyCustomFont(appState.customFontUrl);
+            await applyCustomFont(appState.customFontUrl, appState.customFontFamily, appState.offlineFontUrl, appState.offlineFontFamily);
             applyCustomCss(appState.customCss);
             applyCustomGlobalCss(appState.customGlobalCss);
             applyGlobalFontSize(appState.globalFontSize);
@@ -20210,6 +20319,8 @@ const handleThemeImport = (event) => {
             try {
                 await dbStorage.set(KEYS.CUSTOM_FONT_URL, appState.customFontUrl || '');
                 await dbStorage.set(KEYS.CUSTOM_FONT_FAMILY, appState.customFontFamily || '');
+                await dbStorage.set(KEYS.OFFLINE_FONT_URL, appState.offlineFontUrl || '');
+                await dbStorage.set(KEYS.OFFLINE_FONT_FAMILY, appState.offlineFontFamily || '');
                 await dbStorage.set(KEYS.CUSTOM_CSS, appState.customCss || '');
                 await dbStorage.set(KEYS.CUSTOM_GLOBAL_CSS, appState.customGlobalCss || '');
                 await dbStorage.set(KEYS.GLOBAL_FONT_SIZE, appState.globalFontSize || 16);
@@ -20512,6 +20623,8 @@ const init = async () => {
     // 加载所有美化相关的设置
     appState.customFontUrl = await dbStorage.get(KEYS.CUSTOM_FONT_URL, '');
     appState.customFontFamily = await dbStorage.get(KEYS.CUSTOM_FONT_FAMILY, ''); // 新增：加载字体名称
+    appState.offlineFontUrl = await dbStorage.get(KEYS.OFFLINE_FONT_URL, '');
+    appState.offlineFontFamily = await dbStorage.get(KEYS.OFFLINE_FONT_FAMILY, '');
     appState.customCss = await dbStorage.get(KEYS.CUSTOM_CSS, '');
     appState.customGlobalCss = await dbStorage.get(KEYS.CUSTOM_GLOBAL_CSS, '');
     appState.globalFontSize = await dbStorage.get(KEYS.GLOBAL_FONT_SIZE, 16);
@@ -20521,7 +20634,7 @@ const init = async () => {
     appState.bottomBarTexture = await dbStorage.get(KEYS.BOTTOM_BAR_TEXTURE, '');
 
     // 在页面加载时立即应用所有美化设置
-    applyCustomFont(appState.customFontUrl, appState.customFontFamily); // 修复：传递字体名称参数
+    await applyCustomFont(appState.customFontUrl, appState.customFontFamily, appState.offlineFontUrl, appState.offlineFontFamily);
     applyCustomCss(appState.customCss);
     applyCustomGlobalCss(appState.customGlobalCss);
     applyGlobalFontSize(appState.globalFontSize);
@@ -21665,6 +21778,8 @@ const handleImportSimple = async (event) => {
             console.log("正在更新应用状态中的美化设置...");
             if (backupData[KEYS.CUSTOM_FONT_URL]) appState.customFontUrl = backupData[KEYS.CUSTOM_FONT_URL];
             if (backupData[KEYS.CUSTOM_FONT_FAMILY]) appState.customFontFamily = backupData[KEYS.CUSTOM_FONT_FAMILY];
+            if (backupData[KEYS.OFFLINE_FONT_URL]) appState.offlineFontUrl = backupData[KEYS.OFFLINE_FONT_URL];
+            if (backupData[KEYS.OFFLINE_FONT_FAMILY]) appState.offlineFontFamily = backupData[KEYS.OFFLINE_FONT_FAMILY];
             if (backupData[KEYS.CUSTOM_CSS]) appState.customCss = backupData[KEYS.CUSTOM_CSS];
             if (backupData[KEYS.CUSTOM_GLOBAL_CSS]) appState.customGlobalCss = backupData[KEYS.CUSTOM_GLOBAL_CSS];
             if (backupData[KEYS.GLOBAL_FONT_SIZE]) appState.globalFontSize = backupData[KEYS.GLOBAL_FONT_SIZE];
@@ -37799,6 +37914,8 @@ document.getElementById('global-memory-toggle').onclick = function() {
                     await dbStorage.set(KEYS.CUSTOM_GLOBAL_CSS, '');
                     await dbStorage.set(KEYS.CUSTOM_FONT_URL, '');
                     await dbStorage.set(KEYS.CUSTOM_FONT_FAMILY, '');
+                    await dbStorage.set(KEYS.OFFLINE_FONT_URL, '');
+                    await dbStorage.set(KEYS.OFFLINE_FONT_FAMILY, '');
                     
                     console.log('✅ CSS设置已重置');
                     

@@ -1504,13 +1504,39 @@
             </div>
         </div>
         <div id="custom-beautification-screen" class="screen"><header class="app-header"><button id="custom-beautification-back-btn" class="back-btn">‹</button><h2>自定义美化</h2><button id="toggle-preview-fullscreen-btn" class="settings-btn"><i class="fas fa-expand"></i></button></header><div class="settings-page-content" style="padding: 20px 15px;"><div class="form-group"><label>效果预览</label><div id="beautify-preview"><div id="preview-phone-screen-container"><div class="app-header" style="position: static; padding-top: 10px; height: auto;"><button class="back-btn">‹</button><h2 style="position: static; transform: none;">预览</h2><button class="action-btn settings-btn" style="font-size: 16px;"> ... </button></div><div id="preview-messages-container" class="preview-messages"></div><div class="preview-chat-footer-wrapper"><div class="chat-input-row"><button id="preview-plus-btn" class="toggle-actions-panel-btn"></button><textarea id="preview-chat-input" rows="1"></textarea><button id="preview-emoji-btn" class="toggle-sticker-panel-btn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M8 14s1.5 2 4 2 4-2 4-2"></path><line x1="9" y1="9" x2="9.01" y2="9"></line><line x1="15" y1="9" x2="15.01" y2="9"></line></svg></button><button id="preview-dynamic-btn" class="dynamic-action-btn"></button></div></div></div></div> <div class="form-group">
-        <label for="custom-font-url-input">自定义字体链接 (.ttf)</label>
-        <input type="text" id="custom-font-url-input" placeholder="输入 .ttf 字体文件的 URL">
+        <label for="custom-font-url-input">线上字体</label>
+        <input type="text" id="custom-font-url-input" placeholder="输入 .ttf / .otf / .woff 字体链接">
+        <div class="wallpaper-actions" style="margin-top: 8px;">
+            <span id="online-font-file-status" class="item-value-status">未导入本地字体</span>
+            <div>
+                <button type="button" class="upload-btn" id="import-online-font-btn">导入文件</button>
+                <button type="button" class="upload-btn" id="clear-online-font-btn">清除</button>
+            </div>
+        </div>
+        <input type="file" id="online-font-file-input" accept=".ttf,.otf,.woff,.woff2,font/ttf,font/otf,font/woff,font/woff2" style="display: none;">
     </div>
 
     <div class="form-group">
-        <label for="custom-font-family-input">自定义字体名称 (Font Family)</label>
+        <label for="custom-font-family-input">线上字体名称 (Font Family，可选)</label>
         <input type="text" id="custom-font-family-input" placeholder="例如：'Source Han Serif SC'">
+    </div>
+
+    <div class="form-group">
+        <label for="offline-font-url-input">线下阅读字体</label>
+        <input type="text" id="offline-font-url-input" placeholder="输入 .ttf / .otf / .woff 字体链接">
+        <div class="wallpaper-actions" style="margin-top: 8px;">
+            <span id="offline-font-file-status" class="item-value-status">未导入本地字体</span>
+            <div>
+                <button type="button" class="upload-btn" id="import-offline-font-btn">导入文件</button>
+                <button type="button" class="upload-btn" id="clear-offline-font-btn">清除</button>
+            </div>
+        </div>
+        <input type="file" id="offline-font-file-input" accept=".ttf,.otf,.woff,.woff2,font/ttf,font/otf,font/woff,font/woff2" style="display: none;">
+    </div>
+
+    <div class="form-group">
+        <label for="offline-font-family-input">线下字体名称 (Font Family，可选)</label>
+        <input type="text" id="offline-font-family-input" placeholder="本地文件无需填写">
     </div> </div><div class="form-group"><label for="global-font-size-slider">全局字体大小: <span id="font-size-value">16px</span></label><input type="range" id="global-font-size-slider" min="12" max="20" step="0.5" value="16" style="width: 100%;"></div><div class="form-group"><label>聊天气泡大小</label><div id="bubble-size-selector" class="segmented-control" style="width: 100%;"><button class="segmented-control-button" data-size="small">小</button><button class="segmented-control-button active" data-size="medium">中 (默认)</button><button class="segmented-control-button" data-size="large">大</button></div></div><div class="form-group"><label>全局默认背景</label><div class="wallpaper-actions"><span id="default-bg-status" class="item-value-status">未设置</span><div><button class="upload-btn" id="change-default-bg-btn">更换</button><button class="upload-btn" id="clear-default-bg-btn">清除</button></div></div></div><div class="form-group"><label>顶部栏 (Header)</label><div class="wallpaper-actions"><span id="top-bar-status" class="item-value-status">未设置</span><div><button class="upload-btn" id="change-top-bar-btn">更换</button><button class="upload-btn" id="clear-top-bar-btn">清除</button></div></div></div><div class="form-group"><label>底部栏/输入区</label><div class="wallpaper-actions"><span id="bottom-bar-status" class="item-value-status">未设置</span><div><button class="upload-btn" id="change-bottom-bar-btn">更换</button><button class="upload-btn" id="clear-bottom-bar-btn">清除</button></div></div></div><div style="display: none;"><input type="file" id="default-bg-upload" accept="image/*"><input type="file" id="top-bar-upload" accept="image/*"><input type="file" id="bottom-bar-upload" accept="image/*"></div><div class="form-group"><label for="custom-css-input">自定义气泡样式 (CSS)</label><textarea id="custom-css-input" rows="10" placeholder="在这里粘贴你的 CSS 代码... 例如:&#10;.message-bubble.user .content { background: linear-gradient(to right, #6a11cb, #2575fc); color: white; }"></textarea></div></div><div class="form-group"><label for="custom-global-css-input">全局界面样式 (CSS)</label><textarea id="custom-global-css-input" rows="10" placeholder="自定义其他部分的样式，例如：&#10;.app-header { border-radius: 0 !important; } &#10;#home-screen { padding-top: 120px; }"></textarea></div><div class="settings-actions" style="padding: 15px 20px 40px 20px; display: flex; gap: 10px;"><button class="action-btn-secondary" id="import-theme-btn" style="flex: 1;">导入主题</button><button class="action-btn-secondary" id="export-theme-btn" style="flex: 1;">导出主题</button><button class="save-btn" id="save-beautification-btn" style="flex: 2;">保存并应用</button></div><input type="file" id="theme-import-input" accept=".zip" style="display: none;"></div>
         <audio id="global-audio-player" style="display: none;"></audio>
         <div id="beautify-preview-modal" class="modal-overlay"><div id="preview-phone-screen-container"><div class="preview-header"><span>‹</span><span style="font-weight: 600;">预览</span><span>...</span></div><div class="preview-messages"><div class="message-wrapper ai"><img class="avatar" src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAYAAACqaXHeAAAAAXNSR0IArs4c6QAAARFJREFUeJzt2LEJACEMxEAJ//9/dk8eEMVpU2ecK5eCynLpdDrdz+c55/vnaa3dD5/b2Wtrj/ZgB/ZgB/ZgB/ZgB/bAJ1hrf4s0n2vZTb8d2IMd2IMd2IMd2IMd2IE/sLZe7WubXw/swQ7swQ7swQ7swQ7swR/Y2trZDuxhD3ZgB3ZgB3ZgB3ZgB/ZgB3ZgB3ZgB3ZgB3bA9g7swQ7swQ7swQ7swQ7sAR/Y2tpu9b/ZvwN7sAN7sAN7sAN7sAN7sAN7sAN7sAN7sAN7sAN7sAN7sAN7sAN7sAN7sAN7sAN7sAN7sAN7sAN7sAN/fAERpA3b/e8YAgAAAABJRU5ErkJggg=="><div class="message-bubble ai"><div class="content">你好，这是 AI 消息。</div></div></div><div class="message-wrapper user"><div class="message-bubble user"><div class="content">这是你发送的消息。</div></div></div><div class="message-wrapper ai"><img class="avatar" src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAYAAACqaXHeAAAAAXNSR0IArs4c6QAAARFJREFUeJzt2LEJACEMxEAJ//9/dk8eEMVpU2ecK5eCynLpdDrdz+c55/vnaa3dD5/b2Wtrj/ZgB/ZgB/ZgB/ZgB/bAJ1hrf4s0n2vZTb8d2IMd2IMd2IMd2IMd2IE/sLZe7WubXw/swQ7swQ7swQ7swQ7swR/Y2trZDuxhD3ZgB3ZgB3ZgB3ZgB/ZgB3ZgB3ZgB3ZgB3bA9g7swQ7swQ7swQ7swQ7sAR/Y2tpu9b/ZvwN7sAN7sAN7sAN7sAN7sAN7sAN7sAN7sAN7sAN7sAN7sAN7sAN7sAN7sAN7sAN7sAN7sAN7sAN7sAN/fAERpA3b/e8YAgAAAABJRU5ErkJggg=="><div class="message-bubble ai"><div class="content">在这里预览你的美化效果。</div></div></div></div><div class="preview-footer"><div class="input-placeholder"></div><div class="send-placeholder"></div></div><button id="close-beautify-preview-btn">&times;</button></div></div>

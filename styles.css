@@ -411,13 +411,6 @@ img{image-rendering:optimizeSpeed;image-rendering:-webkit-optimize-contrast;imag
 #phone-screen,.app-header,.chat-messages,.chat-input-area{transform:translateZ(0);-webkit-transform:translateZ(0)}
 
 @font-face { 
-    font-family: 'MyCustomFont'; 
-    src: url('https://files.catbox.moe/o17bhh.ttf') format('truetype'); 
-    font-display: swap; 
-    font-weight: normal;
-    font-style: normal;
-}
-@font-face { 
     font-family: 'MyDiaryFont'; 
     src: url('https://files.catbox.moe/nlu6ea.ttf') format('truetype'); 
     font-display: swap;
@@ -919,7 +912,7 @@ img{image-rendering:optimizeSpeed;image-rendering:-webkit-optimize-contrast;imag
 .quote-reply-container.ai { justify-content: flex-start; }
 .quote-reply-container.user { justify-content: flex-end; }
 .quote-reply-box { background-color: #E1E1E1; padding: 7px 10px; border-radius: 5px; font-size: 13px; color: #656565; display: inline-block; max-width: calc(100% - 100px); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.chat-messages.offline-mode { padding-left: 0; padding-right: 0; padding-bottom: 50px; background-color: #ffffff; color: #3b2f2f; padding-top: 40px; font-family: 'MyCustomFont', serif; }
+.chat-messages.offline-mode { padding-left: 0; padding-right: 0; padding-bottom: 50px; background-color: #ffffff; color: #3b2f2f; padding-top: 40px; font-family: serif; }
 .chat-messages.offline-mode .message-wrapper { flex-direction: column; align-items: center; gap: 0; max-width: 100%; padding: 8px 0; }
 .chat-messages.offline-mode .message-wrapper .avatar { width: 100%; height: 70px; border-radius: 0; object-fit: cover; margin-bottom: 20px; }
 .chat-messages.offline-mode .message-wrapper .avatar { display: none !important; }
