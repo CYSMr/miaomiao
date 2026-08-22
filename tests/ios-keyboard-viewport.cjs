@@ -17,6 +17,8 @@ const APP_URL = process.env.APP_URL || 'http://127.0.0.1:4183';
         });
         const page = await context.newPage();
 
+        // iOS may shrink visualViewport for the keyboard while leaving the
+        // layout viewport unchanged. Reproduce that split explicitly.
         await page.addInitScript(() => {
             const viewport = new EventTarget();
             viewport.height = 844;
@@ -24,10 +26,10 @@ const APP_URL = process.env.APP_URL || 'http://127.0.0.1:4183';
             viewport.offsetTop = 0;
             viewport.offsetLeft = 0;
             viewport.scale = 1;
-            window.__setTestVisualViewport = (height, offsetTop, emitResize = true) => {
+            window.__setTestVisualViewport = (height, offsetTop = 0) => {
                 viewport.height = height;
                 viewport.offsetTop = offsetTop;
-                if (emitResize) viewport.dispatchEvent(new Event('resize'));
+                viewport.dispatchEvent(new Event('resize'));
             };
             Object.defineProperty(window, 'visualViewport', {
                 configurable: true,
@@ -37,36 +39,43 @@ const APP_URL = process.env.APP_URL || 'http://127.0.0.1:4183';
 
         await page.goto(APP_URL, { waitUntil: 'domcontentloaded' });
         await page.waitForFunction(() => document.documentElement.classList.contains('user-platform-ios'));
-
         await page.evaluate(() => {
-            window.showScreen('chat-screen');
+            document.getElementById('chat-screen').classList.add('active');
             document.getElementById('chat-input').focus();
-            window.__setTestVisualViewport(520, 12, true);
         });
+
+        const fullHeight = await page.evaluate(() =>
+            document.getElementById('chat-screen').getBoundingClientRect().height
+        );
+
+        await page.evaluate(() => window.__setTestVisualViewport(520, 12));
         await page.waitForTimeout(50);
 
-        const keyboardOpen = await page.evaluate(() => ({
+        const keyboardState = await page.evaluate(() => ({
             chatHeight: document.getElementById('chat-screen').getBoundingClientRect().height,
-            chatTop: getComputedStyle(document.getElementById('chat-screen')).top,
-            phoneHeight: document.getElementById('phone-screen').getBoundingClientRect().height
+            phoneHeight: document.getElementById('phone-screen').getBoundingClientRect().height,
+            hasKeyboardClass: document.documentElement.classList.contains('ios-keyboard-open')
         }));
-        assert.equal(keyboardOpen.chatHeight, 520, 'iOS 聊天页应跟随键盘缩小后的可视高度');
-        assert.equal(keyboardOpen.chatTop, '12px', 'iOS 聊天页应跟随 visualViewport 的顶部偏移');
-        assert.equal(keyboardOpen.phoneHeight, 844, '键盘适配不能改变首页使用的完整根视口');
 
-        await page.evaluate(() => {
-            document.getElementById('chat-input').blur();
-        });
-        await page.waitForTimeout(400);
+        assert.equal(
+            keyboardState.chatHeight,
+            fullHeight,
+            '聚焦输入框不能创建一套独立且可能残留的聊天页高度'
+        );
+        assert.equal(keyboardState.chatHeight, keyboardState.phoneHeight, '聊天页与根容器必须始终同高');
+        assert.equal(keyboardState.hasKeyboardClass, false, '页面不应依赖输入焦点维护键盘高度状态');
 
-        const keyboardClosed = await page.evaluate(() => ({
-            chatHeight: document.getElementById('chat-screen').getBoundingClientRect().height,
-            chatTop: getComputedStyle(document.getElementById('chat-screen')).top
-        }));
-        assert.equal(keyboardClosed.chatHeight, 844, '失焦后即使 visualViewport 仍是旧键盘高度也应恢复聊天页');
-        assert.equal(keyboardClosed.chatTop, '0px', '键盘收起后不应残留顶部偏移或底部空区');
+        // Keyboard dismissal is not guaranteed to blur the textarea on iOS.
+        // Keeping focus must therefore be harmless.
+        await page.evaluate(() => window.__setTestVisualViewport(844, 0));
+        await page.waitForTimeout(50);
+        assert.equal(
+            await page.evaluate(() => document.getElementById('chat-screen').getBoundingClientRect().height),
+            fullHeight,
+            '键盘收起后页面必须保持完整高度，即使 textarea 仍聚焦'
+        );
 
-        console.log('PASS: iOS chat viewport follows keyboard and restores after blur');
+        console.log('PASS: iOS input focus cannot leave a second chat viewport height behind');
     } finally {
         await browser.close();
     }

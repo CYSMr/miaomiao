@@ -18754,22 +18754,8 @@ const openWidgetSettings = () => {
  * 计算并设置真实的视口高度，以解决移动端浏览器UI遮挡问题
  */
 const setRealViewportHeight = () => {
-    const visualViewport = window.visualViewport;
-    const realViewportHeight = visualViewport?.height || window.innerHeight;
-    const viewportOffsetTop = visualViewport?.offsetTop || 0;
-    const documentElement = document.documentElement;
-    documentElement.style.setProperty('--real-vh', `${realViewportHeight}px`);
-    documentElement.style.setProperty('--real-vp-top', `${viewportOffsetTop}px`);
-
-    const activeElement = document.activeElement;
-    const isEditing = activeElement && (
-        activeElement.matches('input, textarea, [contenteditable="true"]')
-    );
-    const fullHeight = document.getElementById('phone-screen')?.getBoundingClientRect().height || window.innerHeight;
-    const keyboardIsOpen = documentElement.classList.contains('user-platform-ios')
-        && isEditing
-        && fullHeight - realViewportHeight > 120;
-    documentElement.classList.toggle('ios-keyboard-open', keyboardIsOpen);
+    const realViewportHeight = window.visualViewport?.height || window.innerHeight;
+    document.documentElement.style.setProperty('--real-vh', `${realViewportHeight}px`);
     // 设置真实视口高度
 };
 
@@ -18781,14 +18767,6 @@ window.addEventListener('resize', setRealViewportHeight);
 window.visualViewport?.addEventListener('resize', setRealViewportHeight);
 // (保留 load 事件作为双重保险)
 window.addEventListener('load', setRealViewportHeight);
-
-// iOS 有时不会在键盘收起动画结束时再派发 resize，失焦后补一次最终同步。
-document.addEventListener('focusin', setRealViewportHeight);
-document.addEventListener('focusout', () => {
-    document.documentElement.classList.remove('ios-keyboard-open');
-    requestAnimationFrame(setRealViewportHeight);
-    setTimeout(setRealViewportHeight, 320);
-});
 
 // ▼▼▼ 粘贴这一整块新的 JS 函数 ▼▼▼
 
