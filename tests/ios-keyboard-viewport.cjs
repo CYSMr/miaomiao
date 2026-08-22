@@ -55,7 +55,6 @@ const APP_URL = process.env.APP_URL || 'http://127.0.0.1:4183';
         assert.equal(keyboardOpen.phoneHeight, 844, '键盘适配不能改变首页使用的完整根视口');
 
         await page.evaluate(() => {
-            window.__setTestVisualViewport(844, 0, false);
             document.getElementById('chat-input').blur();
         });
         await page.waitForTimeout(400);
@@ -64,7 +63,7 @@ const APP_URL = process.env.APP_URL || 'http://127.0.0.1:4183';
             chatHeight: document.getElementById('chat-screen').getBoundingClientRect().height,
             chatTop: getComputedStyle(document.getElementById('chat-screen')).top
         }));
-        assert.equal(keyboardClosed.chatHeight, 844, '键盘收起即使没有最终 resize 事件也应恢复聊天页高度');
+        assert.equal(keyboardClosed.chatHeight, 844, '失焦后即使 visualViewport 仍是旧键盘高度也应恢复聊天页');
         assert.equal(keyboardClosed.chatTop, '0px', '键盘收起后不应残留顶部偏移或底部空区');
 
         console.log('PASS: iOS chat viewport follows keyboard and restores after blur');
