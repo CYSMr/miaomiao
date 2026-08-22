@@ -18,9 +18,14 @@ const APP_URL = process.env.APP_URL || 'http://127.0.0.1:4183';
         const page = await context.newPage();
 
         await page.goto(APP_URL, { waitUntil: 'domcontentloaded' });
-        await page.waitForFunction(() => document.documentElement.classList.contains('user-platform-ios'));
-        await page.waitForTimeout(800);
-        await page.evaluate(() => window.showScreen('chat-screen'));
+        await page.waitForFunction(() => typeof window.showScreen === 'function', null, { timeout: 60000 });
+        await page.waitForTimeout(1000);
+        await page.evaluate(() => {
+            document.documentElement.classList.add('user-platform-ios');
+            const loadingScreen = document.getElementById('loading-screen');
+            if (loadingScreen) loadingScreen.style.display = 'none';
+            window.showScreen('chat-screen');
+        });
         await page.waitForSelector('#chat-screen.active');
 
         await page.click('#toggle-actions-panel-btn');
