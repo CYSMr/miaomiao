@@ -134,6 +134,12 @@ html.user-platform-ios #phone-screen {
     overscroll-behavior: none;
 }
 
+/* iOS 键盘只收缩聊天页；根视口仍保持完整高度，避免首页露白。 */
+html.user-platform-ios #chat-screen {
+    height: var(--real-vh, 100dvh);
+    top: var(--real-vp-top, 0px);
+}
+
 html.user-platform-ios #home-screen {
     touch-action: none !important;
     overscroll-behavior: none !important;
