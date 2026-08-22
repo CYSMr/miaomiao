@@ -16633,6 +16633,14 @@ setupFileUploadHelper('widget-avatar-upload-input', null, async (src) => {
     // --- 输入框与动态按钮逻辑 ---
     const chatInput = document.getElementById('chat-input');
     const dynamicBtn = document.getElementById('dynamic-action-btn');
+
+    // iOS 点击输入框时先收起自定义操作面板，避免键盘收起后仍留下 280px 空区。
+    chatInput.addEventListener('focus', () => {
+        if (chatInputArea.classList.contains('panel-open')) {
+            closePanel();
+        }
+    });
+
     const sendFunction = async () => {
         const userText = chatInput.value;
         if (!userText.trim()) return; 
