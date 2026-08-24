@@ -115,7 +115,8 @@
                 exportDate: new Date().toISOString(),
                 appVersion: 'AIRP-Enhanced',
                 dataFormat: 'gzip-json',
-                description: '喵喵机跨域迁移完整存档'
+                description: '喵喵机跨域迁移完整存档',
+                kvStoreKeys: Object.keys(main).filter(key => !['wallet', 'shopItems', '__imageAssets'].includes(key))
             },
             __localStorage: readLocalStorage()
         };
