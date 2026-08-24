@@ -2,18 +2,35 @@
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="robots" content="noindex, nofollow">
-  <meta http-equiv="refresh" content="0; url=https://miao-miao.eu.cc/">
-  <title>正在前往喵喵机</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <title>喵喵机｜迁移存档</title>
+  <style>
+    :root { color-scheme: light; font-family: -apple-system,BlinkMacSystemFont,"SF Pro Display","PingFang SC",sans-serif; }
+    * { box-sizing: border-box; }
+    body { margin: 0; min-height: 100vh; display: grid; place-items: center; padding: 24px; color: #33272c; background: linear-gradient(145deg,#fff8fb,#f9e9f0 55%,#fff); }
+    main { width: min(460px,100%); padding: 30px 24px 26px; border: 1px solid rgba(255,255,255,.9); border-radius: 28px; background: rgba(255,255,255,.72); box-shadow: 0 18px 55px rgba(137,74,101,.14); backdrop-filter: blur(18px); }
+    h1 { margin: 0 0 10px; font-size: 25px; }
+    p { line-height: 1.7; color: #705b64; font-size: 14px; }
+    .note { padding: 12px 14px; margin: 18px 0; border-radius: 14px; background: rgba(255,241,247,.9); font-size: 13px; line-height: 1.65; }
+    button, a { display: block; width: 100%; border: 0; border-radius: 14px; padding: 13px 16px; font: inherit; text-align: center; text-decoration: none; cursor: pointer; }
+    button { color: white; background: #cc6f99; box-shadow: 0 8px 18px rgba(204,111,153,.2); }
+    button:disabled { opacity: .6; cursor: wait; }
+    a { margin-top: 10px; color: #8e4e70; background: rgba(255,255,255,.85); border: 1px solid #efd4df; }
+    .next-step { margin-top: 12px; padding: 13px 14px; border: 1px solid #efd4df; border-radius: 14px; color: #8e4e70; background: rgba(255,255,255,.85); text-align: center; line-height: 1.6; font-size: 13px; }
+    #migration-status { min-height: 24px; margin: 16px 0 0; font-size: 13px; color: #80596a; }
+    small { display: block; margin-top: 18px; color: #9a838b; line-height: 1.6; }
+  </style>
 </head>
 <body>
-  <p>正在前往 <a href="https://miao-miao.eu.cc/">喵喵机</a>……</p>
-  <script>
-    const target = new URL('https://miao-miao.eu.cc/');
-    target.search = window.location.search;
-    target.hash = window.location.hash;
-    window.location.replace(target.href);
-  </script>
+  <main>
+    <h1>喵喵机存档迁移</h1>
+    <p>这个旧地址现在只负责导出存档。先在这里下载完整存档，再打开新的喵喵机地址，在新站自行导入。</p>
+    <div class="note">会导出聊天、人物设定、主题、表情、论坛资料、音乐设置、本地图片资源、播放器素材和其他应用设置。导出不会删除旧数据。</div>
+    <button id="export-migration-btn" type="button">导出完整存档</button>
+    <div class="next-step">导出完成后，请使用你收到的新链接打开喵喵机，并在新站导入刚下载的存档。</div>
+    <p id="migration-status" role="status" aria-live="polite"></p>
+    <small>新链接不会显示在这里，由喵喵机管理者单独提供。</small>
+  </main>
+  <script src="migration.js"></script>
 </body>
 </html>
